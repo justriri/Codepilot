@@ -1,6 +1,6 @@
 # AI Coding Agent — Core + Sandbox + Browser Testing + Autonomous Debugging (MVP)
 
-CodePilot provides AI coding agents with isolated sandbox environments to run applications, execute codes, test changes end-to-end, capture proof of results, and generate verification reports,helping developers confidently trust AI-generated code without manual testing.
+CodePilot provides AI coding agents with isolated sandbox environments to run applications, execute codes, test changes end-to-end, capture proof of results, and generate verification reports, helping developers confidently trust AI-generated code without manual testing.
 
 ## Architecture
 
