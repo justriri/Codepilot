@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodePilot — Pipeline Console</title>
+<meta name="description" content="Run a code submission through the verification pipeline: static analysis, automated fix, test generation, sandbox execution, verification.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<style>
+  :root {
+    --bg: #0A0B0D;
+    --bg-elevated: #101215;
+    --panel: #16181C;
+    --panel-2: #1C1F24;
+    --border: #262A30;
+    --border-soft: #1E2126;
+    --text: #E6E8EB;
+    --text-muted: #8A8F98;
+    --text-faint: #52565D;
+    --accent: #3B82F6;
+    --accent-soft: rgba(59,130,246,0.14);
+    --success: #22C55E;
+    --success-soft: rgba(34,197,94,0.14);
+    --failed: #EF4444;
+    --failed-soft: rgba(239,68,68,0.14);
+    --running: #F5A623;
+    --running-soft: rgba(245,166,35,0.14);
+    --pending: #6B7280;
+    --pending-soft: rgba(107,114,128,0.14);
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Courier New', monospace;
+    --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --radius: 8px;
+    --radius-sm: 5px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text);
+    display: flex; -webkit-font-smoothing: antialiased; font-size: 13.5px; overflow: hidden;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+  button { font-family: var(--sans); cursor: pointer; }
+  code, .mono { font-family: var(--mono); }
+
+  .app-shell { display: flex; width: 100%; height: 100vh; overflow: hidden; }
+
+  /* ===== Sidebar (shared shell with the Jobs dashboard) ===== */
+  .sidebar {
+    width: 220px; flex-shrink: 0; background: var(--bg-elevated); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 16px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 0 16px 18px; }
+  .brand-mark {
+    width: 24px; height: 24px; border-radius: 6px; background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-weight: 700; font-size: 12px; color: #fff; flex-shrink: 0;
+  }
+  .brand-text { font-weight: 700; font-size: 13.5px; letter-spacing: -0.01em; }
+  .nav-section-label {
+    font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-faint); padding: 14px 16px 6px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 8px 16px; font-size: 13px; text-decoration: none;
+    color: var(--text-muted); border-left: 2px solid transparent;
+  }
+  .nav-item:hover { color: var(--text); background: var(--panel-2); }
+  .nav-item.active { color: var(--text); background: var(--accent-soft); border-left-color: var(--accent); }
+  .nav-icon { width: 14px; text-align: center; opacity: 0.85; flex-shrink: 0; }
+  .sidebar-footer { margin-top: auto; padding: 12px 16px 0; }
+  .connection-pill {
+    display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px;
+    color: var(--text-faint); padding: 6px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border);
+  }
+  .connection-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  .connection-pill.connected { color: var(--success); border-color: rgba(34,197,94,0.3); }
+  .connection-pill.connected .connection-dot { background: var(--success); }
+  .connection-pill.unreachable { color: var(--failed); border-color: rgba(239,68,68,0.3); }
+  .connection-pill.unreachable .connection-dot { background: var(--failed); }
+
+  .main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .console-header {
+    padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--bg-elevated);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; flex-wrap: wrap; gap: 10px;
+  }
+  .console-header h1 { font-size: 15px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .console-header .subtitle { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+
+  /* ===== Pipeline stage strip (overview at a glance) ===== */
+  #stage-strip {
+    display: flex; align-items: center; gap: 2px; padding: 10px 22px; background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto;
+  }
+  .stage-chip {
+    display: flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; white-space: nowrap;
+    color: var(--text-faint); border: 1px solid transparent; font-family: var(--mono); font-size: 11px;
+  }
+  .stage-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  .stage-chip.running { color: var(--running); border-color: rgba(245,166,35,0.3); background: var(--running-soft); }
+  .stage-chip.running .dot { background: var(--running); animation: pulse 1.1s ease-in-out infinite; }
+  .stage-chip.passed { color: var(--success); }
+  .stage-chip.passed .dot { background: var(--success); }
+  .stage-chip.failed { color: var(--failed); border-color: rgba(239,68,68,0.3); background: var(--failed-soft); }
+  .stage-chip.failed .dot { background: var(--failed); }
+  .stage-chip.retrying { color: var(--running); border-color: rgba(245,166,35,0.3); background: var(--running-soft); }
+  .stage-chip.retrying .dot { background: var(--running); animation: pulse 0.8s ease-in-out infinite; }
+  .stage-chip.skipped { color: var(--text-faint); opacity: 0.4; text-decoration: line-through; }
+  .stage-arrow { color: var(--border); font-size: 12px; }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+  @media (prefers-reduced-motion: reduce) { .stage-chip .dot { animation: none !important; } }
+  #status-line { font-family: var(--mono); font-size: 11px; color: var(--running); padding: 0 22px 8px; background: var(--bg-elevated); min-height: 15px; flex-shrink: 0; }
+
+  main.panels { flex: 1; display: grid; grid-template-columns: 1.1fr 1fr 1fr; min-height: 0; gap: 1px; background: var(--border); overflow: hidden; }
+  @media (max-width: 1200px) { main.panels { grid-template-columns: 1fr 1fr; } #input-panel { grid-column: 1 / -1; } }
+  @media (max-width: 760px) { main.panels { grid-template-columns: 1fr; overflow-y: auto; } }
+  section.panel { display: flex; flex-direction: column; min-height: 0; background: var(--bg); overflow: hidden; }
+  .panel-label {
+    font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-faint); padding: 13px 18px 9px; flex-shrink: 0;
+  }
+  .panel-body { flex: 1; overflow-y: auto; padding: 0 18px 20px; }
+
+  /* ===== Input panel ===== */
+  #task-input {
+    width: calc(100% - 36px); margin: 0 18px 9px; font-family: var(--sans); font-size: 12px; line-height: 1.5;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 8px 10px; resize: vertical; min-height: 40px;
+  }
+  #task-input:focus { border-color: var(--accent); outline: none; }
+  .input-controls { display: flex; gap: 7px; padding: 0 18px 9px; align-items: center; }
+  #language-select {
+    font-family: var(--mono); font-size: 12px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 9px;
+  }
+  #example-btn {
+    font-family: var(--sans); font-size: 11.5px; background: transparent; color: var(--accent);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 10px;
+  }
+  #editor-container {
+    flex: 1; margin: 0 18px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; min-height: 220px; position: relative;
+  }
+  #editor-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; color: var(--text-faint); background: var(--panel-2); }
+  .run-controls { display: flex; gap: 7px; margin: 0 18px 16px; }
+  #run-btn {
+    flex: 1; font-family: var(--sans); font-weight: 600; font-size: 12.5px; background: var(--accent); color: #fff;
+    border: none; border-radius: var(--radius-sm); padding: 11px; display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  #run-btn:hover:not(:disabled) { filter: brightness(1.08); }
+  #run-btn:disabled { background: var(--panel-2); color: var(--text-faint); cursor: not-allowed; }
+  #cancel-btn {
+    display: none; font-family: var(--sans); font-weight: 600; font-size: 12px; background: var(--panel-2);
+    color: var(--failed); border: 1px solid rgba(239,68,68,0.35); border-radius: var(--radius-sm); padding: 11px 14px;
+  }
+  #cancel-btn.visible { display: block; }
+  .btn-spinner { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== Shared card / stage styling ===== */
+  .state-message { color: var(--text-faint); font-size: 12.5px; padding: 26px 4px; text-align: center; line-height: 1.6; }
+  .error-box { background: var(--failed-soft); border: 1px solid rgba(239,68,68,0.35); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; font-family: var(--mono); margin-bottom: 12px; }
+  .error-box .error-message { margin: 0 0 8px; }
+  .retry-btn { font-family: var(--sans); font-size: 11px; font-weight: 600; background: transparent; color: var(--failed); border: 1px solid rgba(239,68,68,0.4); border-radius: var(--radius-sm); padding: 4px 9px; }
+  .cancelled-box { background: var(--panel-2); border: 1px solid var(--border); color: var(--text-muted); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; margin-bottom: 12px; }
+
+  .stage-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
+  .stage-card-header {
+    display: flex; align-items: center; justify-content: space-between; padding: 9px 13px;
+    background: var(--bg-elevated); border-bottom: 1px solid var(--border-soft);
+  }
+  .stage-card-header h3 {
+    font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-faint); margin: 0;
+  }
+  .stage-card-body { padding: 12px 13px; }
+
+  .kv-field { margin-bottom: 9px; }
+  .kv-field:last-child { margin-bottom: 0; }
+  .kv-field-label { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 3px; }
+  .kv-field p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  ul.plain { margin: 0; padding-left: 16px; font-size: 12px; line-height: 1.65; }
+  .muted { color: var(--text-faint); font-style: italic; }
+
+  .severity-badge { display: inline-block; font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em; padding: 2px 8px; border-radius: var(--radius-sm); text-transform: uppercase; }
+  .severity-none, .severity-low { background: var(--success-soft); color: var(--success); }
+  .severity-medium { background: var(--running-soft); color: var(--running); }
+  .severity-high, .severity-critical, .severity-unknown { background: var(--failed-soft); color: var(--failed); }
+
+  pre { margin: 0; border-radius: var(--radius-sm); overflow-x: auto; font-size: 11.5px; }
+  .code-block-wrap { position: relative; }
+  .icon-btn {
+    position: absolute; top: 6px; right: 6px; font-family: var(--mono); font-size: 10px; padding: 3px 7px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted);
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--text); }
+  .icon-btn.copied { color: var(--success); border-color: rgba(34,197,94,0.4); }
+  .test-block { margin-bottom: 7px; position: relative; }
+  .test-block:last-child { margin-bottom: 0; }
+  .test-block pre { background: var(--panel-2); padding: 8px 10px; border: 1px solid var(--border-soft); }
+
+  /* ===== Sandbox log terminal ===== */
+  .log-terminal { background: #050608; border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11px; color: #C7CAD6; max-height: 230px; overflow-y: auto; white-space: pre-wrap; }
+  .log-terminal-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid #16181c; background: #0A0B0D; }
+  .log-terminal-title { font-size: 9.5px; color: #5B5F68; letter-spacing: 0.05em; text-transform: uppercase; }
+  .exit-code-pill { font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px; letter-spacing: 0.03em; }
+  .exit-code-pill.zero { background: var(--success-soft); color: var(--success); }
+  .exit-code-pill.nonzero { background: var(--failed-soft); color: var(--failed); }
+  .log-terminal-body { padding: 9px 10px; }
+  .log-line { display: flex; gap: 7px; }
+  .log-line .prefix { color: #4A4E56; flex-shrink: 0; }
+
+  /* ===== Verification verdict ===== */
+  .verdict-badge {
+    display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-weight: 700; font-size: 15px;
+    letter-spacing: 0.05em; padding: 7px 14px; border-radius: var(--radius-sm); border: 1.5px solid; margin-bottom: 8px;
+  }
+  .verdict-verified { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+  .verdict-failed { color: var(--failed); border-color: var(--failed); background: var(--failed-soft); }
+  .verdict-error { color: var(--running); border-color: var(--running); background: var(--running-soft); }
+  .verdict-skipped { color: var(--text-faint); border-color: var(--border); background: var(--panel-2); }
+  #verification-detail { margin: 0 0 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ===== Retry attempts (CI-style, not "AI tried again") ===== */
+  .retry-entry { border-left: 2px solid var(--border); padding: 2px 0 2px 12px; margin-bottom: 11px; position: relative; }
+  .retry-entry::before { content: ''; position: absolute; left: -5px; top: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--panel); border: 2px solid var(--text-faint); }
+  .retry-entry.pass::before { border-color: var(--success); }
+  .retry-entry.fail::before { border-color: var(--failed); }
+  .retry-entry-title { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 3px; display: flex; align-items: center; gap: 7px; }
+  .retry-entry-outcome { font-weight: 600; }
+  .retry-entry-outcome.pass { color: var(--success); }
+  .retry-entry-outcome.fail { color: var(--failed); }
+  .retry-entry p { font-size: 11.5px; margin: 0; line-height: 1.45; color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">C</div>
+      <div class="brand-text">CodePilot</div>
+    </div>
+    <div class="nav-section-label">Verification</div>
+    <a class="nav-item" href="/index.html"><span class="nav-icon">&#9633;</span> Jobs</a>
+    <a class="nav-item" href="/index.html"><span class="nav-icon">+</span> Submit Job</a>
+    <a class="nav-item active" href="/agent-interface.html"><span class="nav-icon">&#9655;</span> Pipeline Console</a>
+    <div class="sidebar-footer">
+      <span id="backend-status" class="connection-pill">
+        <span class="connection-dot"></span><span class="connection-text">Checking backend…</span>
+      </span>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <div class="console-header">
+      <div>
+        <h1>Pipeline Console</h1>
+        <div class="subtitle">Runs one code submission through the same static-analysis → fix → test → sandbox-execution → verification pipeline the job engine uses — a direct test harness for the pipeline, not a chat interface.</div>
+      </div>
+    </div>
+
+    <div id="stage-strip">
+      <span class="stage-chip" data-stage="analysis"><span class="dot"></span>Static Analysis</span>
+      <span class="stage-arrow">→</span>
+      <span class="stage-chip" data-stage="fix"><span class="dot"></span>Fix Generation</span>
+      <span class="stage-arrow">→</span>
+      <span class="stage-chip" data-stage="tests"><span class="dot"></span>Test Generation</span>
+      <span class="stage-arrow">→</span>
+      <span class="stage-chip" data-stage="sandbox"><span class="dot"></span>Sandbox Execution</span>
+      <span class="stage-arrow">→</span>
+      <span class="stage-chip" data-stage="verification"><span class="dot"></span>Verification</span>
+    </div>
+    <div id="status-line"></div>
+
+    <main class="panels">
+      <section class="panel" id="input-panel">
+        <div class="panel-label">Submission</div>
+        <textarea id="task-input" placeholder="Optional context for the analysis stage..."></textarea>
+        <div class="input-controls">
+          <select id="language-select">
+            <option value="python" selected>Python</option>
+            <option value="javascript">JavaScript</option>
+          </select>
+          <button id="example-btn" type="button">Load example</button>
+        </div>
+        <div id="editor-container"><div id="editor-loading">Loading editor…</div></div>
+        <div class="run-controls">
+          <button id="run-btn" type="button" disabled><span class="btn-run-label">Run Pipeline</span></button>
+          <button id="cancel-btn" type="button">Cancel</button>
+        </div>
+      </section>
+
+      <section class="panel" id="analysis-panel">
+        <div class="panel-label">Static Analysis / Fix</div>
+        <div class="panel-body" id="analysis-body">
+          <div class="state-message">No pipeline run yet.</div>
+        </div>
+      </section>
+
+      <section class="panel" id="verification-panel">
+        <div class="panel-label">Test Generation / Sandbox / Verification</div>
+        <div class="panel-body" id="verification-body">
+          <div class="state-message">Test output, sandbox logs, and the verification verdict will appear here.</div>
+        </div>
+      </section>
+    </main>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/vs/loader.js"></script>
+<script>
+(function () {
+  const MAX_REPAIR_ATTEMPTS = 3;
+
+  const EXAMPLES = {
+    python: "def calculate_average(numbers):\n    total = 0\n    for n in numbers:\n        total += n\n    return total / len(numbers)\n\nprint(calculate_average([]))\n",
+    javascript: "function average(numbers) {\n  let total = 0;\n  for (const n of numbers) total += n;\n  return total / numbers.length;\n}\n\nconsole.log(average([]));\n",
+  };
+
+  const taskInput = document.getElementById('task-input');
+  const languageSelect = document.getElementById('language-select');
+  const exampleBtn = document.getElementById('example-btn');
+  const runBtn = document.getElementById('run-btn');
+  const cancelBtn = document.getElementById('cancel-btn');
+  const statusLine = document.getElementById('status-line');
+  const analysisBody = document.getElementById('analysis-body');
+  const verificationBody = document.getElementById('verification-body');
+
+  let editor = null;
+  let currentAbortController = null;
+  const sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'session-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
+  // --- Backend connectivity ---
+  async function checkBackendStatus() {
+    const el = document.getElementById('backend-status');
+    const textEl = el.querySelector('.connection-text');
+    try {
+      const res = await fetch('/openapi.json');
+      if (!res.ok) throw new Error('non-200');
+      el.className = 'connection-pill connected';
+      textEl.textContent = 'Backend Connected';
+    } catch (e) {
+      el.className = 'connection-pill unreachable';
+      textEl.textContent = 'Backend Unreachable';
+    }
+  }
+  checkBackendStatus();
+
+  // --- Stage strip ---
+  const STAGE_STATUS_TEXT = {
+    analysis: 'Running static analysis...',
+    fix: 'Generating fix...',
+    tests: 'Generating tests...',
+    sandbox: 'Executing in sandbox...',
+    verification: 'Compiling verification result...',
+  };
+  function setStage(name, state) {
+    const chip = document.querySelector('.stage-chip[data-stage="' + name + '"]');
+    if (!chip) return;
+    chip.classList.remove('running', 'passed', 'failed', 'skipped', 'retrying');
+    if (state) chip.classList.add(state);
+    if (state === 'running' || state === 'retrying') statusLine.textContent = STAGE_STATUS_TEXT[name] || '';
+  }
+  function resetStages() {
+    ['analysis', 'fix', 'tests', 'sandbox', 'verification'].forEach((s) => setStage(s, null));
+    statusLine.textContent = '';
+  }
+
+  function isCancelled(err) { return !!err && err.name === 'AbortError'; }
+  function showCancelledMessage() {
+    clearChildren(analysisBody);
+    const box = mk('div', { className: 'cancelled-box' });
+    box.setAttribute('role', 'status');
+    box.appendChild(mk('p', { text: 'Pipeline run cancelled.' }));
+    analysisBody.appendChild(box);
+  }
+
+  function setRunButtonLoading(isLoading) {
+    runBtn.disabled = isLoading;
+    taskInput.disabled = isLoading;
+    languageSelect.disabled = isLoading;
+    exampleBtn.disabled = isLoading;
+    cancelBtn.classList.toggle('visible', isLoading);
+    runBtn.innerHTML = isLoading
+      ? '<span class="btn-spinner"></span><span class="btn-run-label">Running…</span>'
+      : '<span class="btn-run-label">Run Pipeline</span>';
+  }
+  cancelBtn.addEventListener('click', () => { if (currentAbortController) currentAbortController.abort(); });
+
+  function clearChildren(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function mk(tag, opts) {
+    const n = document.createElement(tag);
+    if (opts) {
+      if (opts.className) n.className = opts.className;
+      if (opts.text !== undefined) n.textContent = opts.text;
+    }
+    return n;
+  }
+  function showGlobalError(message, onRetry) {
+    clearChildren(analysisBody);
+    const box = mk('div', { className: 'error-box' });
+    box.setAttribute('role', 'alert');
+    box.appendChild(mk('p', { className: 'error-message', text: message }));
+    if (onRetry) {
+      const btn = mk('button', { className: 'retry-btn', text: 'Retry' });
+      btn.type = 'button';
+      btn.addEventListener('click', onRetry);
+      box.appendChild(btn);
+    }
+    analysisBody.appendChild(box);
+  }
+
+  function copyButton(getText) {
+    const btn = mk('button', { className: 'icon-btn', text: 'Copy' });
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      const text = getText();
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1400);
+      }).catch(() => { btn.textContent = 'Copy failed'; setTimeout(() => { btn.textContent = 'Copy'; }, 1400); });
+    });
+    return btn;
+  }
+
+  async function callApi(url, body) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        signal: currentAbortController ? currentAbortController.signal : undefined,
+      });
+    } catch (err) {
+      if (isCancelled(err)) throw err;
+      throw new Error('Could not reach the backend: ' + err.message);
+    }
+    if (!res.ok) {
+      let detail = 'HTTP ' + res.status;
+      try { const errBody = await res.json(); if (errBody && errBody.detail) detail = errBody.detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    let data;
+    try { data = await res.json(); } catch (_) { throw new Error('The server returned an invalid response.'); }
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) throw new Error('The server returned an empty response.');
+    return data;
+  }
+
+  // --- Rendering: Static Analysis / Fix stage cards ---
+  function renderAnalysisStage(analysis) {
+    clearChildren(analysisBody);
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Stage: Static Analysis' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+
+    const issuesField = mk('div', { className: 'kv-field' });
+    issuesField.appendChild(mk('span', { className: 'kv-field-label', text: 'Issues Found' }));
+    const ul = mk('ul', { className: 'plain' });
+    const issues = Array.isArray(analysis.issues_found) ? analysis.issues_found : [];
+    if (issues.length) issues.forEach((i) => ul.appendChild(mk('li', { text: i })));
+    else ul.appendChild(mk('li', { className: 'muted', text: 'None' }));
+    issuesField.appendChild(ul);
+    body.appendChild(issuesField);
+
+    const sevField = mk('div', { className: 'kv-field' });
+    sevField.appendChild(mk('span', { className: 'kv-field-label', text: 'Severity' }));
+    const severity = (analysis.severity || 'unknown').toLowerCase();
+    sevField.appendChild(mk('span', { className: 'severity-badge severity-' + severity, text: severity.toUpperCase() }));
+    body.appendChild(sevField);
+
+    const explField = mk('div', { className: 'kv-field' });
+    explField.appendChild(mk('span', { className: 'kv-field-label', text: 'Detail' }));
+    explField.appendChild(mk('p', { text: analysis.explanation || '—' }));
+    body.appendChild(explField);
+
+    card.appendChild(body);
+    analysisBody.appendChild(card);
+  }
+
+  function renderFixStage(fix, rewrittenCode, language) {
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Stage: Fix Generation' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+
+    const fixField = mk('div', { className: 'kv-field' });
+    fixField.appendChild(mk('span', { className: 'kv-field-label', text: 'Proposed Patch' }));
+    fixField.appendChild(mk('p', { text: fix || '(none generated)' }));
+    body.appendChild(fixField);
+
+    const codeField = mk('div', { className: 'kv-field' });
+    codeField.appendChild(mk('span', { className: 'kv-field-label', text: 'Resulting Code' }));
+    const wrap = mk('div', { className: 'code-block-wrap' });
+    const pre = mk('pre');
+    const code = mk('code', { text: rewrittenCode || '(no output)' });
+    code.className = 'language-' + language;
+    pre.appendChild(code);
+    wrap.appendChild(pre);
+    wrap.appendChild(copyButton(() => rewrittenCode || ''));
+    codeField.appendChild(wrap);
+    body.appendChild(codeField);
+
+    card.appendChild(body);
+    analysisBody.appendChild(card);
+    if (window.Prism) window.Prism.highlightElement(code);
+  }
+
+  // --- Rendering: Test Generation / Sandbox / Verification ---
+  function renderTestsStage(tests, language) {
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Stage: Test Generation' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+
+    if (tests.length) {
+      tests.forEach((t) => {
+        const wrap = mk('div', { className: 'test-block' });
+        const pre = mk('pre');
+        const code = mk('code', { text: t });
+        code.className = 'language-' + language;
+        pre.appendChild(code);
+        wrap.appendChild(pre);
+        body.appendChild(wrap);
+      });
+    } else {
+      body.appendChild(mk('p', { className: 'muted', text: 'No tests generated.' }));
+    }
+    card.appendChild(body);
+    verificationBody.appendChild(card);
+    if (window.Prism) window.Prism.highlightAllUnder(body);
+  }
+
+  function renderSandboxStage(testExecution) {
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Stage: Sandbox Execution' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+
+    const term = mk('div', { className: 'log-terminal' });
+    const termHeader = mk('div', { className: 'log-terminal-header' });
+    termHeader.appendChild(mk('span', { className: 'log-terminal-title', text: 'execution output' }));
+    const exitCode = testExecution.exit_code;
+    termHeader.appendChild(mk('span', {
+      className: 'exit-code-pill ' + (exitCode === 0 ? 'zero' : 'nonzero'),
+      text: 'exit ' + (exitCode === null || exitCode === undefined ? '—' : exitCode),
+    }));
+    term.appendChild(termHeader);
+
+    const termBody = mk('div', { className: 'log-terminal-body' });
+    const stdoutLine = mk('div', { className: 'log-line' });
+    stdoutLine.appendChild(mk('span', { className: 'prefix', text: 'stdout' }));
+    stdoutLine.appendChild(mk('span', { text: testExecution.stdout || '(empty)' }));
+    termBody.appendChild(stdoutLine);
+    const stderrLine = mk('div', { className: 'log-line' });
+    stderrLine.appendChild(mk('span', { className: 'prefix', text: 'stderr' }));
+    stderrLine.appendChild(mk('span', { text: testExecution.stderr || '(empty)' }));
+    termBody.appendChild(stderrLine);
+    term.appendChild(termBody);
+
+    body.appendChild(term);
+    card.appendChild(body);
+    verificationBody.appendChild(card);
+  }
+
+  function renderVerdict(status, attemptsUsed, detail) {
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Stage: Verification' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+
+    const classMap = { VERIFIED: 'verdict-verified', FAILED: 'verdict-failed', ERROR: 'verdict-error', SKIPPED: 'verdict-skipped' };
+    const detailMap = {
+      VERIFIED: attemptsUsed > 0 ? ('Passed after ' + attemptsUsed + ' retry attempt(s).') : 'Passed on the first attempt.',
+      FAILED: 'Still failing after ' + attemptsUsed + ' retry attempt(s) — see retry attempts and sandbox log.',
+      ERROR: detail || 'Verification could not complete.',
+      SKIPPED: 'Static analysis found no issues, so no fix was generated or tested. This is not a verification result.',
+    };
+    body.appendChild(mk('span', { className: 'verdict-badge ' + (classMap[status] || 'verdict-error'), text: status }));
+    body.appendChild(mk('br'));
+    body.appendChild(mk('p', { text: detailMap[status] || '' }));
+    card.appendChild(body);
+    verificationBody.appendChild(card);
+  }
+
+  function renderRetryAttempts(history) {
+    if (!history.length) return;
+    const card = mk('div', { className: 'stage-card' });
+    const header = mk('div', { className: 'stage-card-header' });
+    header.appendChild(mk('h3', { text: 'Retry Attempts (' + history.length + ')' }));
+    card.appendChild(header);
+    const body = mk('div', { className: 'stage-card-body' });
+    history.forEach((entry) => {
+      const item = mk('div', { className: 'retry-entry ' + (entry.passed ? 'pass' : 'fail') });
+      const title = mk('div', { className: 'retry-entry-title' });
+      title.appendChild(mk('span', { text: 'Attempt ' + entry.attempt }));
+      title.appendChild(mk('span', { className: 'retry-entry-outcome ' + (entry.passed ? 'pass' : 'fail'), text: entry.passed ? 'PASS' : 'FAIL' }));
+      item.appendChild(title);
+      item.appendChild(mk('p', { text: entry.suggestedFix || '(no patch description)' }));
+      body.appendChild(item);
+    });
+    card.appendChild(body);
+    verificationBody.appendChild(card);
+  }
+
+  // --- Verification with a bounded retry loop (same behavior as before, reused unchanged) ---
+  async function runVerification(initialCode, language, issueDescription, initialSuggestedFix) {
+    clearChildren(verificationBody);
+    const retryHistory = [];
+
+    setStage('tests', 'running');
+    let tests;
+    try {
+      tests = await callApi('/api/agent-interface/generate-tests', { code: initialCode, language: language, session_id: sessionId });
+    } catch (err) {
+      if (isCancelled(err)) { setStage('tests', null); showCancelledMessage(); return; }
+      setStage('tests', 'failed');
+      showGlobalError(err.message, () => runPipeline());
+      return;
+    }
+    setStage('tests', 'passed');
+    renderTestsStage(tests.tests_generated || [], language);
+    const testsGenerated = Array.isArray(tests.tests_generated) ? tests.tests_generated : [];
+
+    let currentCode = initialCode;
+    let attempt = 0;
+    let runResult;
+
+    setStage('sandbox', 'running');
+    try {
+      runResult = await callApi('/api/agent-interface/run-tests', {
+        code: currentCode, tests_generated: testsGenerated, language: language,
+        session_id: sessionId, issue_description: issueDescription, suggested_fix: initialSuggestedFix,
+      });
+    } catch (err) {
+      if (isCancelled(err)) { setStage('sandbox', null); showCancelledMessage(); return; }
+      setStage('sandbox', 'failed');
+      showGlobalError(err.message, () => runPipeline());
+      return;
+    }
+
+    while (runResult.status === 'failed' && attempt < MAX_REPAIR_ATTEMPTS) {
+      attempt += 1;
+      setStage('sandbox', 'retrying');
+      statusLine.textContent = 'Retry attempt ' + attempt + ' of ' + MAX_REPAIR_ATTEMPTS + '...';
+
+      const failureDetail = 'The test run failed.\nstdout:\n' + (runResult.stdout || '') + '\nstderr:\n' + (runResult.stderr || '');
+      let fix, rewrite;
+      try {
+        fix = await callApi('/api/agent-interface/suggest-fix', { code: currentCode, issue_description: failureDetail, language: language, session_id: sessionId });
+        rewrite = await callApi('/api/agent-interface/rewrite', { code: currentCode, fix_description: fix.suggested_fix || '', language: language, session_id: sessionId });
+      } catch (err) {
+        if (isCancelled(err)) { showCancelledMessage(); return; }
+        retryHistory.push({ attempt: attempt, passed: false, suggestedFix: 'Retry attempt errored: ' + err.message });
+        break;
+      }
+      currentCode = rewrite.rewritten_code || currentCode;
+
+      try {
+        runResult = await callApi('/api/agent-interface/run-tests', {
+          code: currentCode, tests_generated: testsGenerated, language: language,
+          session_id: sessionId, issue_description: failureDetail, suggested_fix: (fix && fix.suggested_fix) || '',
+        });
+      } catch (err) {
+        if (isCancelled(err)) { showCancelledMessage(); return; }
+        retryHistory.push({ attempt: attempt, passed: false, suggestedFix: (fix && fix.suggested_fix) || '' });
+        setStage('sandbox', 'failed');
+        showGlobalError(err.message, () => runPipeline());
+        renderRetryAttempts(retryHistory);
+        return;
+      }
+      retryHistory.push({ attempt: attempt, passed: runResult.status === 'passed', suggestedFix: (fix && fix.suggested_fix) || '' });
+    }
+
+    setStage('sandbox', runResult.status === 'error' ? 'failed' : 'passed');
+    setStage('verification', 'running');
+    const statusMap = { passed: 'VERIFIED', failed: 'FAILED', error: 'ERROR' };
+    const finalStatus = statusMap[runResult.status] || 'ERROR';
+
+    renderSandboxStage(runResult);
+    renderRetryAttempts(retryHistory);
+    renderVerdict(finalStatus, attempt, runResult.detail);
+    setStage('verification', runResult.status === 'error' ? 'failed' : 'passed');
+    statusLine.textContent = '';
+  }
+
+  // --- Main pipeline orchestration ---
+  async function runPipeline() {
+    const rawCode = editor.getValue().trim();
+    if (!rawCode) { showGlobalError('No code submitted.'); return; }
+    const language = languageSelect.value;
+    const task = taskInput.value.trim();
+    const combinedCode = task ? '# Context: ' + task + '\n\n' + rawCode : rawCode;
+
+    resetStages();
+    clearChildren(analysisBody);
+    clearChildren(verificationBody);
+    currentAbortController = new AbortController();
+    setRunButtonLoading(true);
+
+    setStage('analysis', 'running');
+    let analysis;
+    try {
+      analysis = await callApi('/api/agent-interface/analyze', { code: combinedCode, language: language, session_id: sessionId });
+    } catch (err) {
+      if (isCancelled(err)) { setStage('analysis', null); showCancelledMessage(); setRunButtonLoading(false); return; }
+      setStage('analysis', 'failed');
+      showGlobalError(err.message, () => runPipeline());
+      setRunButtonLoading(false);
+      return;
+    }
+    setStage('analysis', 'passed');
+    renderAnalysisStage(analysis);
+
+    const issues = Array.isArray(analysis.issues_found) ? analysis.issues_found : [];
+    if (!issues.length) {
+      setStage('fix', 'skipped');
+      setStage('tests', 'skipped');
+      setStage('sandbox', 'skipped');
+      setStage('verification', 'running');
+      renderVerdict('SKIPPED', 0, '');
+      setStage('verification', 'passed');
+      statusLine.textContent = '';
+      setRunButtonLoading(false);
+      return;
+    }
+
+    setStage('fix', 'running');
+    let fix, rewrite;
+    const issueDescription = analysis.explanation || issues.join('; ');
+    try {
+      fix = await callApi('/api/agent-interface/suggest-fix', { code: combinedCode, issue_description: issueDescription, language: language, session_id: sessionId });
+      rewrite = await callApi('/api/agent-interface/rewrite', { code: rawCode, fix_description: (fix && fix.suggested_fix) || '', language: language, session_id: sessionId });
+    } catch (err) {
+      if (isCancelled(err)) { setStage('fix', null); showCancelledMessage(); setRunButtonLoading(false); return; }
+      setStage('fix', 'failed');
+      showGlobalError(err.message, () => runPipeline());
+      setRunButtonLoading(false);
+      return;
+    }
+    setStage('fix', 'passed');
+    const rewrittenCode = (rewrite && rewrite.rewritten_code) || rawCode;
+    renderFixStage((fix && fix.suggested_fix) || '', rewrittenCode, language);
+
+    await runVerification(rewrittenCode, language, issueDescription, (fix && fix.suggested_fix) || '');
+    setRunButtonLoading(false);
+  }
+
+  exampleBtn.addEventListener('click', () => {
+    const lang = languageSelect.value;
+    if (editor) editor.setValue(EXAMPLES[lang] || EXAMPLES.python);
+  });
+  languageSelect.addEventListener('change', () => {
+    if (editor && window.monaco) window.monaco.editor.setModelLanguage(editor.getModel(), languageSelect.value);
+  });
+  runBtn.addEventListener('click', runPipeline);
+
+  require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/vs' } });
+  window.MonacoEnvironment = {
+    getWorkerUrl: function () {
+      return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
+        "self.MonacoEnvironment = { baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/' };\n" +
+        "importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/vs/base/worker/workerMain.js');"
+      );
+    },
+  };
+  require(['vs/editor/editor.main'], function () {
+    const loadingEl = document.getElementById('editor-loading');
+    if (loadingEl) loadingEl.remove();
+    editor = window.monaco.editor.create(document.getElementById('editor-container'), {
+      value: EXAMPLES.python, language: 'python', theme: 'vs-dark', automaticLayout: true,
+      minimap: { enabled: false }, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, padding: { top: 10 },
+    });
+    runBtn.disabled = false;
+  });
+})();
+</script>
+
+</body>
+</html>

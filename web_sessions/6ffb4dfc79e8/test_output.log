@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.9.2, pytest-8.4.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /workspace
+collecting ... collected 8 items
+
+test_app.py::TestCalculateTotal::test_integer_items PASSED               [ 12%]
+test_app.py::TestCalculateTotal::test_decimal_items PASSED               [ 25%]
+test_app.py::TestCalculateTotal::test_empty_list PASSED                  [ 37%]
+test_app.py::TestCalculateTotal::test_single_item PASSED                 [ 50%]
+test_app.py::TestCalculateTotal::test_negative_numbers PASSED            [ 62%]
+test_app.py::TestCalculateTotal::test_mixed_types PASSED                 [ 75%]
+test_app.py::TestCalculateTotal::test_large_numbers PASSED               [ 87%]
+test_app.py::TestCalculateTotal::test_precision PASSED                   [100%]
+
+============================== 8 passed in 0.10s ===============================
