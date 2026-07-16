@@ -73,11 +73,19 @@ class SandboxManager:
 
         try:
             self.sandbox = Sandbox.create()
+            self._destroyed_event.clear()
             self._workdir = None
             workdir = self.get_working_directory()
             self.sandbox.commands.run(f"mkdir -p {workdir}/.sandbox")
 
         except Exception as e:
+            if self.sandbox:
+                try:
+                    self.sandbox.kill()
+                except Exception:
+                    pass
+                self.sandbox = None
+            self._destroyed_event.set()
             return {
                 "success": False,
                 "error": f"E2B sandbox creation failed: {e}"
@@ -88,7 +96,6 @@ class SandboxManager:
         self.last_test_result = None
         self._app_process = None
 
-        self._destroyed_event.clear()
         self._start_watchdog()
 
         return {
