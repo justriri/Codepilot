@@ -28,8 +28,7 @@ import shlex
 import threading
 import time
 
-import docker
-from docker.errors import APIError, DockerException, ImageNotFound
+from e2b import Sandbox
 
 
 class SandboxError(Exception):
@@ -46,8 +45,7 @@ class SandboxManager:
         # running, we want that to surface as a clean {"success": False}
         # tool result when create_sandbox is called — not a raw traceback
         # at app startup, before the agent has even begun.
-        self._client = None
-        self.container = None
+        self.sandbox = None
         self.container_port = 3000
         self.host_port = None
         self.created_at = None
@@ -64,7 +62,7 @@ class SandboxManager:
 
     @property
     def is_active(self) -> bool:
-        return self.container is not None and not self._destroyed_event.is_set()
+        return self.sandbox is not None and not self._destroyed_event.is_set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -72,64 +70,32 @@ class SandboxManager:
 
     def create(self) -> dict:
         if self.is_active:
-            return {"success": False, "error": "A sandbox is already active. Destroy it first."}
-
-        try:
-            if self._client is None:
-                self._client = docker.from_env()
-        except DockerException as e:
-            self._client = None
             return {
                 "success": False,
-                "error": f"Could not connect to Docker: {e}. Is Docker running?",
+                "error": "A sandbox is already active."
             }
 
         try:
-            self.container = self._client.containers.run(
-                self.config.docker_image,
-                command="sleep infinity",
-                detach=True,
-                working_dir="/workspace",
-                volumes={self.workspace_root: {"bind": "/workspace", "mode": "rw"}},
-                # Publish the app port to a host port Docker picks automatically,
-                # so start_application can read back whatever it was assigned.
-                ports={f"{self.container_port}/tcp": None},
-                # --- Resource limits ---
-                mem_limit=self.config.sandbox_mem_limit,
-                nano_cpus=self.config.sandbox_nano_cpus,
-                pids_limit=self.config.sandbox_pids_limit,
-                # --- Restricted permissions ---
-                cap_drop=["ALL"],
-                security_opt=["no-new-privileges"],
-                # Outbound network is left enabled (bridge mode) so
-                # install_dependencies can reach npm/pip registries.
-                # See README "Safety" for tightening this further
-                # (egress allowlisting, no-network mode, etc).
-                network_mode="bridge",
-                auto_remove=False,
-            )
-        except ImageNotFound:
-            self.container = None
+            self.sandbox = Sandbox.create()
+
+        except Exception as e:
             return {
                 "success": False,
-                "error": (
-                    f"Docker image '{self.config.docker_image}' was not found locally. "
-                    "This is a custom image — unlike public images (e.g. 'alpine'), it is "
-                    "never auto-pulled from a registry, so it must be built once before "
-                    f"first use. Fix: docker build -t {self.config.docker_image} ./sandbox"
-                ),
+                "error": f"E2B sandbox creation failed: {e}"
             }
-        except DockerException as e:
-            self.container = None
-            return {"success": False, "error": f"Failed to create sandbox: {e}"}
 
         self.created_at = time.time()
         self.last_start_result = None
         self.last_test_result = None
+
         self._destroyed_event.clear()
         self._start_watchdog()
 
-        return {"success": True, "sandbox_id": self.container.id[:12], "status": "running"}
+        return {
+            "success": True,
+            "sandbox_id": self.sandbox.sandbox_id,
+            "status": "running"
+        }
 
     def _start_watchdog(self):
         """
@@ -151,18 +117,28 @@ class SandboxManager:
     def destroy(self) -> dict:
         if not self.is_active:
             self._destroyed_event.set()
-            return {"success": True, "note": "No active sandbox to destroy."}
+            return {
+                "success": True,
+                "note": "No active sandbox to destroy."
+            }
 
         try:
-            self.container.remove(force=True)
-        except DockerException as e:
-            return {"success": False, "error": f"Failed to destroy sandbox: {e}"}
+            self.sandbox.kill()
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to destroy sandbox: {e}"
+            }
+
         finally:
-            self.container = None
-            self.host_port = None
+            self.sandbox = None
             self._destroyed_event.set()
 
-        return {"success": True, "status": "destroyed"}
+        return {
+            "success": True,
+            "status": "destroyed"
+        }
 
     # ------------------------------------------------------------------
     # Command execution
@@ -180,10 +156,10 @@ class SandboxManager:
         wrapped = f"timeout {int(timeout)} sh -c {shlex.quote(command)}"
 
         try:
-            exit_code, output = self.container.exec_run(
+            exit_code, output = self.sandbox.exec_run(
                 wrapped, workdir="/workspace", demux=True
             )
-        except APIError as e:
+        except Exception as e:
             return {"success": False, "error": f"Docker exec failed: {e}"}
 
         stdout_b, stderr_b = output if output else (b"", b"")
@@ -224,16 +200,16 @@ class SandboxManager:
         )
 
         try:
-            self.container.exec_run(f'sh -c "{launch}"', workdir="/workspace")
-        except APIError as e:
+            self.sandbox.exec_run(f'sh -c "{launch}"', workdir="/workspace")
+        except Exception as e:
             result = {"success": False, "error": f"Failed to start application: {e}"}
             self.last_start_result = result
             return result
 
         time.sleep(1.5)  # brief grace period for the process to bind its port
 
-        self.container.reload()
-        port_bindings = self.container.attrs["NetworkSettings"]["Ports"].get(f"{port}/tcp")
+        self.sandbox.reload()
+        port_bindings = self.sandbox.attrs["NetworkSettings"]["Ports"].get(f"{port}/tcp")
         if not port_bindings:
             result = {
                 "success": False,
@@ -268,15 +244,15 @@ class SandboxManager:
 
         check_cmd = 'test -f /workspace/.sandbox/app.pid && cat /workspace/.sandbox/app.pid || true'
         try:
-            _, output = self.container.exec_run(f'sh -c "{check_cmd}"', workdir="/workspace")
-        except APIError as e:
+            _, output = self.sandbox.exec_run(f'sh -c "{check_cmd}"', workdir="/workspace")
+        except Exception as e:
             return {"success": False, "error": f"Failed to check running process: {e}"}
 
         pid = (output or b"").decode().strip()
         if not pid:
             return {"success": True, "note": "No running application process found (already stopped?)."}
 
-        self.container.exec_run(f'sh -c "kill -9 {pid} 2>/dev/null || true"')
+        self.sandbox.exec_run(f'sh -c "kill -9 {pid} 2>/dev/null || true"')
         return {"success": True, "note": f"Stopped process with pid {pid}."}
 
     # ------------------------------------------------------------------
@@ -530,4 +506,3 @@ class SandboxManager:
             "content": content,
             "machine_readable": self._build_machine_readable_result(summary, overall_result, test_result, timestamp),
         }
-        
