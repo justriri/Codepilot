@@ -1,30 +1,24 @@
 """
 Sandbox manager.
 
-Owns the full lifecycle of a single Docker container that acts as the
+Owns the full lifecycle of a single E2B sandbox that acts as the
 isolated execution environment for one agent task:
 
-  create()            -> start a fresh, resource-limited container
+  create()            -> start a fresh cloud sandbox
   exec_command()       -> run a one-off command inside it (with timeout)
   start_application()  -> launch a long-running process (e.g. a dev server)
   run_test_flow()       -> drive Playwright through an ordered user flow
   generate_report()      -> compile everything into a verification report
   stop_application()   -> kill the running app process
-  destroy()             -> remove the container entirely
+  destroy()             -> remove the sandbox entirely
 
 MVP scope: one sandbox per task/session. If you need concurrent sandboxes
 later (multiple sessions in parallel), promote this into a SandboxPool
 keyed by session_id rather than adding that complexity here.
-
-The project directory (Workspace.root) is bind-mounted into the container
-at /workspace, so file edits made on the host via create_file/read_file
-are immediately visible inside the container, and vice versa — no need
-to copy files in and out.
 """
 
 import json
 import os
-import shlex
 import threading
 import time
 
@@ -41,14 +35,15 @@ class SandboxManager:
         self.workspace_root = workspace_root
         self.config = config
 
-        # Deliberately NOT connecting to Docker here. If the daemon isn't
-        # running, we want that to surface as a clean {"success": False}
+        # Deliberately NOT connecting to E2B here. If the API key isn't
+        # configured or valid, we want that to surface as a clean {"success": False}
         # tool result when create_sandbox is called — not a raw traceback
         # at app startup, before the agent has even begun.
         self.sandbox = None
         self.container_port = 3000
         self.host_port = None
         self.created_at = None
+        self._app_process = None
 
         # State kept purely so generate_report() can compile a full
         # picture without the agent having to re-supply everything it
@@ -87,6 +82,7 @@ class SandboxManager:
         self.created_at = time.time()
         self.last_start_result = None
         self.last_test_result = None
+        self._app_process = None
 
         self._destroyed_event.clear()
         self._start_watchdog()
@@ -133,6 +129,7 @@ class SandboxManager:
 
         finally:
             self.sandbox = None
+            self._app_process = None
             self._destroyed_event.set()
 
         return {
@@ -150,30 +147,27 @@ class SandboxManager:
 
     def exec_command(self, command: str, timeout: int = 30) -> dict:
         """Run a one-off command inside the sandbox, enforcing a hard
-        wall-clock timeout via the container's own `timeout` utility."""
+        wall-clock timeout using E2B's native timeout parameter."""
         self._require_active()
 
-        wrapped = f"timeout {int(timeout)} sh -c {shlex.quote(command)}"
-
         try:
-            exit_code, output = self.sandbox.exec_run(
-                wrapped, workdir="/workspace", demux=True
+            result = self.sandbox.commands.run(
+                command, cwd="/workspace", timeout=timeout
             )
         except Exception as e:
-            return {"success": False, "error": f"Docker exec failed: {e}"}
+            if "timeout" in str(e).lower() or type(e).__name__ == "TimeoutException" or isinstance(e, TimeoutError):
+                return {
+                    "success": False,
+                    "exit_code": 124,
+                    "error": f"Command timed out after {timeout}s",
+                    "stdout": "",
+                    "stderr": str(e),
+                }
+            return {"success": False, "error": f"E2B exec failed: {e}"}
 
-        stdout_b, stderr_b = output if output else (b"", b"")
-        stdout = (stdout_b or b"").decode("utf-8", errors="replace")[-4000:]
-        stderr = (stderr_b or b"").decode("utf-8", errors="replace")[-4000:]
-
-        if exit_code == 124:  # `timeout` reserves 124 for "process timed out"
-            return {
-                "success": False,
-                "exit_code": exit_code,
-                "error": f"Command timed out after {timeout}s",
-                "stdout": stdout,
-                "stderr": stderr,
-            }
+        exit_code = result.exit_code if result.exit_code is not None else 0
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
 
         return {"success": exit_code == 0, "exit_code": exit_code, "stdout": stdout, "stderr": stderr}
 
@@ -184,7 +178,7 @@ class SandboxManager:
     def start_application(self, command: str, port: int | None = None) -> dict:
         """
         Launch a long-running process (e.g. a dev server) in the background
-        inside the container. Its stdout/stderr are redirected to
+        inside the sandbox. Its stdout/stderr are redirected to
         .sandbox/app.log INSIDE THE WORKSPACE, so the agent can read errors
         back out via the ordinary read_file tool — no new tool needed just
         to observe logs.
@@ -193,14 +187,17 @@ class SandboxManager:
         port = port or self.container_port
 
         log_dir = "/workspace/.sandbox"
-        launch = (
+        launch_cmd = (
             f"mkdir -p {log_dir} && "
-            f"sh -c {shlex.quote(command)} > {log_dir}/app.log 2>&1 & "
-            f"echo $! > {log_dir}/app.pid"
+            f"({command}) > {log_dir}/app.log 2>&1 & "
+            f"echo $! > {log_dir}/app.pid && "
+            f"wait $!"
         )
 
         try:
-            self.sandbox.exec_run(f'sh -c "{launch}"', workdir="/workspace")
+            self._app_process = self.sandbox.commands.run(
+                launch_cmd, background=True, cwd="/workspace", timeout=0
+            )
         except Exception as e:
             result = {"success": False, "error": f"Failed to start application: {e}"}
             self.last_start_result = result
@@ -208,13 +205,21 @@ class SandboxManager:
 
         time.sleep(1.5)  # brief grace period for the process to bind its port
 
-        self.sandbox.reload()
-        port_bindings = self.sandbox.attrs["NetworkSettings"]["Ports"].get(f"{port}/tcp")
-        if not port_bindings:
+        try:
+            exposed_url = self.sandbox.get_host(port)
+        except Exception as e:
+            result = {
+                "success": False,
+                "error": f"Failed to get exposed host URL for port {port}: {e}",
+            }
+            self.last_start_result = result
+            return result
+
+        if not exposed_url:
             result = {
                 "success": False,
                 "error": (
-                    f"Container port {port} has no host mapping. Either the "
+                    f"Sandbox port {port} could not be exposed. Either the "
                     "process failed to start (check .sandbox/app.log via "
                     "read_file) or it's listening on a different port."
                 ),
@@ -222,16 +227,18 @@ class SandboxManager:
             self.last_start_result = result
             return result
 
-        self.host_port = port_bindings[0]["HostPort"]
+        if not exposed_url.startswith("http://") and not exposed_url.startswith("https://"):
+            exposed_url = f"https://{exposed_url}"
+
         result = {
             "success": True,
             "command": command,
             "port": port,
-            "exposed_url": f"http://localhost:{self.host_port}",
+            "exposed_url": exposed_url,
             "internal_url": f"http://localhost:{port}",
             "note": (
                 "Use 'internal_url' when calling run_test_flow (Playwright runs "
-                "inside this same container). Use 'exposed_url' if a human needs "
+                "inside this same sandbox). Use 'exposed_url' if a human needs "
                 "to open it in a browser on the host. "
                 "Read '.sandbox/app.log' with read_file to check startup output/errors."
             ),
@@ -242,18 +249,33 @@ class SandboxManager:
     def stop_application(self) -> dict:
         self._require_active()
 
-        check_cmd = 'test -f /workspace/.sandbox/app.pid && cat /workspace/.sandbox/app.pid || true'
+        stopped_via_handle = False
+        if self._app_process is not None:
+            try:
+                self._app_process.kill()
+                stopped_via_handle = True
+            except Exception:
+                pass
+            finally:
+                self._app_process = None
+
+        # Fallback / cleanup: PID-based kill via commands.run
+        check_cmd = "test -f /workspace/.sandbox/app.pid && cat /workspace/.sandbox/app.pid || true"
         try:
-            _, output = self.sandbox.exec_run(f'sh -c "{check_cmd}"', workdir="/workspace")
+            result = self.sandbox.commands.run(check_cmd, cwd="/workspace")
+            pid = (result.stdout or "").strip()
+            if pid:
+                self.sandbox.commands.run(f"kill -9 {pid} 2>/dev/null || true", cwd="/workspace")
+                self.sandbox.commands.run("rm -f /workspace/.sandbox/app.pid", cwd="/workspace")
+                return {"success": True, "note": f"Stopped process with pid {pid}."}
         except Exception as e:
-            return {"success": False, "error": f"Failed to check running process: {e}"}
+            if not stopped_via_handle:
+                return {"success": False, "error": f"Failed to check/kill running process: {e}"}
 
-        pid = (output or b"").decode().strip()
-        if not pid:
-            return {"success": True, "note": "No running application process found (already stopped?)."}
+        if stopped_via_handle:
+            return {"success": True, "note": "Stopped application process via E2B CommandHandle."}
 
-        self.sandbox.exec_run(f'sh -c "kill -9 {pid} 2>/dev/null || true"')
-        return {"success": True, "note": f"Stopped process with pid {pid}."}
+        return {"success": True, "note": "No running application process found (already stopped?)."}
 
     # ------------------------------------------------------------------
     # Verification (Playwright test flow)
@@ -263,40 +285,35 @@ class SandboxManager:
         """
         Drive the baked-in Playwright runner through an ordered sequence
         of user-flow steps (navigate/click/fill/assert) against `base_url`
-        inside the container.
+        inside the sandbox.
 
-        The spec is written directly to the host-side workspace directory
-        (which is bind-mounted into the container), rather than piped
-        through docker exec's stdin — simpler, and avoids interleaving
-        with the browser's own stdout noise. The result is read back the
-        same way, from a JSON file the runner always writes, even on
-        internal failure.
+        The spec and result files are written/read using E2B's filesystem API
+        (self.sandbox.files.write / read), since there is no host bind-mount
+        in E2B cloud sandboxes.
 
         The result is cached on self.last_test_result so generate_report()
         can compile it without the agent needing to repeat it.
         """
         self._require_active()
 
-        sandbox_dir_host = os.path.join(self.workspace_root, ".sandbox")
-        os.makedirs(sandbox_dir_host, exist_ok=True)
+        # Clear any stale result from a previous run inside the sandbox so a crash
+        # here can never be mistaken for a leftover pass from an earlier attempt.
+        self.exec_command("mkdir -p /workspace/.sandbox && rm -f /workspace/.sandbox/test_result.json")
 
-        spec_path_host = os.path.join(sandbox_dir_host, "test_spec.json")
-        result_path_host = os.path.join(sandbox_dir_host, "test_result.json")
-
-        # Clear any stale result from a previous run so a crash here can
-        # never be mistaken for a leftover pass from an earlier attempt.
-        if os.path.exists(result_path_host):
-            os.remove(result_path_host)
-
-        with open(spec_path_host, "w") as f:
-            json.dump({"base_url": base_url, "steps": steps, "record_video": record_video}, f)
+        spec_content = json.dumps({"base_url": base_url, "steps": steps, "record_video": record_video})
+        self.sandbox.files.write("/workspace/.sandbox/test_spec.json", spec_content)
 
         runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
         command = f"{runner} /workspace/.sandbox/test_spec.json /workspace/.sandbox/test_result.json"
 
         exec_result = self.exec_command(command, timeout=timeout)
 
-        if not os.path.exists(result_path_host):
+        try:
+            raw_result = self.sandbox.files.read("/workspace/.sandbox/test_result.json")
+            if isinstance(raw_result, bytes):
+                raw_result = raw_result.decode("utf-8", errors="replace")
+            test_result = json.loads(raw_result)
+        except Exception:
             test_result = {
                 "success": False,
                 "steps": [],
@@ -306,9 +323,6 @@ class SandboxManager:
                 "runner_stdout": exec_result.get("stdout", ""),
                 "runner_stderr": exec_result.get("stderr", ""),
             }
-        else:
-            with open(result_path_host, "r") as f:
-                test_result = json.load(f)
 
         self.last_test_result = test_result
         return test_result
