@@ -49,8 +49,9 @@ def run(spec_path: str, result_path: str) -> dict:
     steps = spec.get("steps", [])
     record_video = bool(spec.get("record_video", False))
 
+    workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
     browser = BrowserController(
-        workspace_root="/workspace",
+        workspace_root=workspace_root,
         evidence_subdir=".sandbox/evidence",
         record_video=record_video,
     )
@@ -70,7 +71,7 @@ def run(spec_path: str, result_path: str) -> dict:
     # its content isn't read here, but the agent can read it separately
     # via read_file if a step fails.
     logs_evidence = list(console_errors[:5])
-    if os.path.exists("/workspace/.sandbox/app.log"):
+    if os.path.exists(os.path.join(workspace_root, ".sandbox/app.log")):
         logs_evidence.append(".sandbox/app.log")
 
     simple_report = report_module.generate_report(base_url, step_results, screenshots, logs_evidence)

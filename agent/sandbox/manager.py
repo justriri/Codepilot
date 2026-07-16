@@ -44,6 +44,7 @@ class SandboxManager:
         self.host_port = None
         self.created_at = None
         self._app_process = None
+        self._workdir = None
 
         # State kept purely so generate_report() can compile a full
         # picture without the agent having to re-supply everything it
@@ -72,6 +73,9 @@ class SandboxManager:
 
         try:
             self.sandbox = Sandbox.create()
+            self._workdir = None
+            workdir = self.get_working_directory()
+            self.sandbox.commands.run(f"mkdir -p {workdir}/.sandbox")
 
         except Exception as e:
             return {
@@ -130,6 +134,7 @@ class SandboxManager:
         finally:
             self.sandbox = None
             self._app_process = None
+            self._workdir = None
             self._destroyed_event.set()
 
         return {
@@ -141,18 +146,71 @@ class SandboxManager:
     # Command execution
     # ------------------------------------------------------------------
 
+    def get_working_directory(self) -> str:
+        if self._workdir:
+            return self._workdir
+        if not self.is_active:
+            raise SandboxError("No active sandbox. Call create_sandbox first.")
+        try:
+            res = self.sandbox.commands.run("pwd")
+            self._workdir = (res.stdout or "").strip() or "/home/user"
+            return self._workdir
+        except Exception:
+            self._workdir = "/home/user"
+            return self._workdir
+
+    def sync_workspace(self) -> dict:
+        """
+        Sync all files from the host workspace (self.workspace_root) directly
+        into the E2B sandbox's working directory before executing commands or
+        starting applications.
+        """
+        self._require_active()
+        workdir = self.get_working_directory()
+
+        if not self.workspace_root or not os.path.exists(self.workspace_root):
+            return {"success": True, "synced_files": 0}
+
+        ignore_dirs = {".sandbox", ".git", "__pycache__", "venv", "node_modules", ".pytest_cache", ".mypy_cache"}
+        synced_count = 0
+
+        for root, dirs, files in os.walk(self.workspace_root):
+            dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith("._")]
+            for filename in files:
+                if filename.startswith("._") or filename.endswith(".pyc"):
+                    continue
+                local_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(local_path, self.workspace_root).replace("\\", "/")
+                remote_path = f"{workdir}/{rel_path}" if rel_path != "." else workdir
+                try:
+                    with open(local_path, "rb") as f:
+                        content = f.read()
+                    self.sandbox.files.write(remote_path, content)
+                    synced_count += 1
+                except Exception:
+                    pass
+
+        return {"success": True, "synced_files": synced_count}
+
     def _require_active(self):
         if not self.is_active:
             raise SandboxError("No active sandbox. Call create_sandbox first.")
+        workdir = self.get_working_directory()
+        try:
+            self.sandbox.commands.run(f"mkdir -p {workdir}/.sandbox")
+        except Exception as e:
+            raise SandboxError(f"Failed to ensure .sandbox directory in sandbox working directory ({workdir}): {e}")
 
     def exec_command(self, command: str, timeout: int = 30) -> dict:
         """Run a one-off command inside the sandbox, enforcing a hard
         wall-clock timeout using E2B's native timeout parameter."""
         self._require_active()
+        self.sync_workspace()
+        workdir = self.get_working_directory()
 
         try:
             result = self.sandbox.commands.run(
-                command, cwd="/workspace", timeout=timeout
+                command, cwd=workdir, timeout=timeout
             )
         except Exception as e:
             if "timeout" in str(e).lower() or type(e).__name__ == "TimeoutException" or isinstance(e, TimeoutError):
@@ -184,9 +242,11 @@ class SandboxManager:
         to observe logs.
         """
         self._require_active()
+        self.sync_workspace()
+        workdir = self.get_working_directory()
         port = port or self.container_port
 
-        log_dir = "/workspace/.sandbox"
+        log_dir = f"{workdir}/.sandbox"
         launch_cmd = (
             f"mkdir -p {log_dir} && "
             f"({command}) > {log_dir}/app.log 2>&1 & "
@@ -196,7 +256,7 @@ class SandboxManager:
 
         try:
             self._app_process = self.sandbox.commands.run(
-                launch_cmd, background=True, cwd="/workspace", timeout=0
+                launch_cmd, background=True, cwd=workdir, timeout=0
             )
         except Exception as e:
             result = {"success": False, "error": f"Failed to start application: {e}"}
@@ -248,6 +308,7 @@ class SandboxManager:
 
     def stop_application(self) -> dict:
         self._require_active()
+        workdir = self.get_working_directory()
 
         stopped_via_handle = False
         if self._app_process is not None:
@@ -260,13 +321,13 @@ class SandboxManager:
                 self._app_process = None
 
         # Fallback / cleanup: PID-based kill via commands.run
-        check_cmd = "test -f /workspace/.sandbox/app.pid && cat /workspace/.sandbox/app.pid || true"
+        check_cmd = f"test -f {workdir}/.sandbox/app.pid && cat {workdir}/.sandbox/app.pid || true"
         try:
-            result = self.sandbox.commands.run(check_cmd, cwd="/workspace")
+            result = self.sandbox.commands.run(check_cmd, cwd=workdir)
             pid = (result.stdout or "").strip()
             if pid:
-                self.sandbox.commands.run(f"kill -9 {pid} 2>/dev/null || true", cwd="/workspace")
-                self.sandbox.commands.run("rm -f /workspace/.sandbox/app.pid", cwd="/workspace")
+                self.sandbox.commands.run(f"kill -9 {pid} 2>/dev/null || true", cwd=workdir)
+                self.sandbox.commands.run(f"rm -f {workdir}/.sandbox/app.pid", cwd=workdir)
                 return {"success": True, "note": f"Stopped process with pid {pid}."}
         except Exception as e:
             if not stopped_via_handle:
@@ -295,21 +356,23 @@ class SandboxManager:
         can compile it without the agent needing to repeat it.
         """
         self._require_active()
+        self.sync_workspace()
+        workdir = self.get_working_directory()
 
         # Clear any stale result from a previous run inside the sandbox so a crash
         # here can never be mistaken for a leftover pass from an earlier attempt.
-        self.exec_command("mkdir -p /workspace/.sandbox && rm -f /workspace/.sandbox/test_result.json")
+        self.exec_command(f"mkdir -p {workdir}/.sandbox && rm -f {workdir}/.sandbox/test_result.json")
 
         spec_content = json.dumps({"base_url": base_url, "steps": steps, "record_video": record_video})
-        self.sandbox.files.write("/workspace/.sandbox/test_spec.json", spec_content)
+        self.sandbox.files.write(f"{workdir}/.sandbox/test_spec.json", spec_content)
 
         runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
-        command = f"{runner} /workspace/.sandbox/test_spec.json /workspace/.sandbox/test_result.json"
+        command = f"WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
 
         exec_result = self.exec_command(command, timeout=timeout)
 
         try:
-            raw_result = self.sandbox.files.read("/workspace/.sandbox/test_result.json")
+            raw_result = self.sandbox.files.read(f"{workdir}/.sandbox/test_result.json")
             if isinstance(raw_result, bytes):
                 raw_result = raw_result.decode("utf-8", errors="replace")
             test_result = json.loads(raw_result)

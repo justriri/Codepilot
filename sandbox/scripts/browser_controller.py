@@ -33,10 +33,12 @@ import shutil
 class BrowserController:
     def __init__(
         self,
-        workspace_root: str = "/workspace",
+        workspace_root: str | None = None,
         evidence_subdir: str = ".sandbox/evidence",
         record_video: bool = False,
     ):
+        if not workspace_root or workspace_root == "/workspace":
+            workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
         self.workspace_root = workspace_root
         self.evidence_subdir = evidence_subdir
         self.evidence_dir_abs = os.path.join(workspace_root, evidence_subdir)
