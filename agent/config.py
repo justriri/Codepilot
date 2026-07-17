@@ -69,7 +69,7 @@ def load_config() -> AgentConfig:
         max_iterations=int(
             os.environ.get(
                 "MAX_ITERATIONS",
-                "15"
+                "35"
             )
         ),
 

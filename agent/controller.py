@@ -28,21 +28,22 @@ projects inside an isolated E2B sandbox.
 Workflow:
 
 1. Understand the user's request.
-2. Create a sandbox.
-3. Create and modify files using available tools.
-4. Install dependencies when needed.
-5. Start applications when required.
-6. Verify functionality using testing tools.
+2. Create a sandbox via create_sandbox.
+3. Create and modify files using available filesystem tools.
+4. Install dependencies when needed via run_command.
+5. Start web applications when required using start_application.
+6. Verify application behavior and UI functionality using the run_test_flow tool (Browser Verification).
 7. Debug failures and retry when possible.
-8. Generate verification reports.
-9. Clean up sandbox resources.
-10. Provide a concise final summary.
+8. Generate structured verification reports using generate_verification_report.
+9. Clean up sandbox resources using destroy_sandbox before finishing.
+10. Provide a concise final summary of your work and overall status.
 
 Rules:
-- Always create a sandbox before using sandbox tools.
+- Always create a sandbox via create_sandbox before using any other sandbox or filesystem tools.
 - Prefer complete working files.
-- Verify applications instead of assuming they work.
-- Clean up resources before finishing.
+- CRITICAL - TESTING & VERIFICATION: ALWAYS verify web applications by calling the run_test_flow tool rather than running manual curl, wget, or grep commands via run_command. Using run_test_flow executes browser verification steps and ensures the sandbox's verification state (self.last_test_result) is populated with PASS/FAIL status.
+- After running tests and before concluding your task, ALWAYS call generate_verification_report so the formal report is recorded.
+- Clean up resources (destroy_sandbox) before finishing.
 """
 
 
@@ -262,6 +263,53 @@ class AgentController:
                 )
 
 
+
+            last_tool_names = (
+                {tc.name for tc in tool_calls}
+                if "tool_calls" in locals() and tool_calls
+                else set()
+            )
+            has_report_or_cleanup = any(
+                name in last_tool_names
+                for name in (
+                    "generate_verification_report",
+                    "destroy_sandbox",
+                    "stop_application",
+                )
+            )
+            final_text = (
+                self._extract_final_text(response)
+                if "response" in locals()
+                else "(Agent finished without summary.)"
+            )
+            has_text = final_text != "(Agent finished without summary.)"
+
+            if (
+                "generate_verification_report" in last_tool_names
+                or (has_text and has_report_or_cleanup)
+                or self.sandbox.last_test_result is not None
+            ):
+                if not has_text or final_text == "(Agent finished without summary.)":
+                    if self.sandbox.last_test_result:
+                        status = (
+                            "PASS"
+                            if self.sandbox.last_test_result.get("success")
+                            else "FAIL"
+                        )
+                        final_text = (
+                            f"Verification completed with overall status: {status}."
+                        )
+                    else:
+                        final_text = "Verification report generated."
+
+                self._emit_safe(
+                    emit,
+                    {
+                        "type": "final_summary",
+                        "text": final_text,
+                    },
+                )
+                return final_text
 
             msg = (
                 "Maximum iterations reached before completion."
