@@ -199,6 +199,49 @@ class SandboxManager:
 
         return {"success": True, "synced_files": synced_count}
 
+    def sync_from_sandbox(self, paths: list[str] | None = None) -> None:
+        """Download specified paths from E2B .sandbox/ back to host workspace if they exist."""
+        if not self.is_active or not self.workspace_root:
+            return
+        try:
+            workdir = self.get_working_directory()
+        except Exception:
+            return
+        paths = paths or [".sandbox/app.log", ".sandbox/app.pid", ".sandbox/test_result.json", ".sandbox/test_spec.json"]
+        for rel_path in paths:
+            clean_rel = rel_path.lstrip("/")
+            remote_path = f"{workdir}/{clean_rel}"
+            local_path = os.path.join(self.workspace_root, clean_rel)
+            try:
+                content = self.sandbox.files.read(remote_path)
+                if content is not None:
+                    if isinstance(content, bytes):
+                        content_str = content.decode("utf-8", errors="replace")
+                    else:
+                        content_str = content
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    with open(local_path, "w", encoding="utf-8") as f:
+                        f.write(content_str)
+            except Exception:
+                pass
+
+    def read_sandbox_file(self, path: str) -> str | None:
+        """Read a file directly from the E2B sandbox without needing host bind-mounts."""
+        if not self.is_active:
+            return None
+        try:
+            workdir = self.get_working_directory()
+            clean_rel = path.lstrip("/")
+            remote_path = f"{workdir}/{clean_rel}"
+            content = self.sandbox.files.read(remote_path)
+            if content is not None:
+                if isinstance(content, bytes):
+                    return content.decode("utf-8", errors="replace")
+                return content
+        except Exception:
+            pass
+        return None
+
     def _require_active(self):
         if not self.is_active:
             raise SandboxError("No active sandbox. Call create_sandbox first.")
@@ -234,6 +277,7 @@ class SandboxManager:
         stdout = result.stdout or ""
         stderr = result.stderr or ""
 
+        self.sync_from_sandbox()
         return {"success": exit_code == 0, "exit_code": exit_code, "stdout": stdout, "stderr": stderr}
 
     # ------------------------------------------------------------------
@@ -311,6 +355,7 @@ class SandboxManager:
             ),
         }
         self.last_start_result = result
+        self.sync_from_sandbox()
         return result
 
     def stop_application(self) -> dict:
@@ -335,11 +380,13 @@ class SandboxManager:
             if pid:
                 self.sandbox.commands.run(f"kill -9 {pid} 2>/dev/null || true", cwd=workdir)
                 self.sandbox.commands.run(f"rm -f {workdir}/.sandbox/app.pid", cwd=workdir)
+                self.sync_from_sandbox()
                 return {"success": True, "note": f"Stopped process with pid {pid}."}
         except Exception as e:
             if not stopped_via_handle:
                 return {"success": False, "error": f"Failed to check/kill running process: {e}"}
 
+        self.sync_from_sandbox()
         if stopped_via_handle:
             return {"success": True, "note": "Stopped application process via E2B CommandHandle."}
 
@@ -373,10 +420,28 @@ class SandboxManager:
         spec_content = json.dumps({"base_url": base_url, "steps": steps, "record_video": record_video})
         self.sandbox.files.write(f"{workdir}/.sandbox/test_spec.json", spec_content)
 
-        runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
-        command = f"WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+        check_cmd = "test -f /opt/agent-tools/run_test_flow.py && echo opt || echo local"
+        try:
+            res = self.sandbox.commands.run(check_cmd, cwd=workdir)
+            is_opt = (res.stdout or "").strip() == "opt"
+        except Exception:
+            is_opt = False
+
+        if is_opt:
+            runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
+            command = f"WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+        else:
+            if not getattr(self, "_playwright_checked", False):
+                try:
+                    self.sandbox.commands.run("python3 -m pip install -q playwright && python3 -m playwright install --with-deps chromium", cwd=workdir, timeout=180)
+                except Exception:
+                    pass
+                self._playwright_checked = True
+            runner = f"python3 {workdir}/sandbox/scripts/run_test_flow.py"
+            command = f"PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
 
         exec_result = self.exec_command(command, timeout=timeout)
+        self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
         try:
             raw_result = self.sandbox.files.read(f"{workdir}/.sandbox/test_result.json")

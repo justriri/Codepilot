@@ -23,7 +23,7 @@ from providers.base_provider import BaseProvider, ProviderError, ToolResult
 
 SYSTEM_PROMPT = """
 You are an autonomous coding agent that builds, runs, and verifies
-projects inside an isolated Docker sandbox.
+projects inside an isolated E2B sandbox.
 
 Workflow:
 

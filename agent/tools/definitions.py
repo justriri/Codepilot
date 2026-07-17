@@ -82,7 +82,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "create_sandbox",
         "description": (
-            "Create a fresh, isolated Docker sandbox for this task. Must be "
+            "Create a fresh, isolated E2B cloud sandbox for this task. Must be "
             "called before install_dependencies, run_command, or "
             "start_application. Only one sandbox can be active at a time."
         ),

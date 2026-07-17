@@ -26,11 +26,21 @@ def create_file(workspace: Workspace, path: str, content: str = "") -> dict:
     return {"success": True, "path": path, "bytes_written": len(content.encode("utf-8"))}
 
 
-def read_file(workspace: Workspace, path: str) -> dict:
+def read_file(workspace: Workspace, path: str, sandbox=None) -> dict:
     """Read and return the contents of an existing file."""
     full_path = workspace.resolve(path)
 
     if not os.path.isfile(full_path):
+        if sandbox and hasattr(sandbox, "is_active") and sandbox.is_active:
+            content = sandbox.read_sandbox_file(path)
+            if content is not None:
+                try:
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                except Exception:
+                    pass
+                return {"success": True, "path": path, "content": content}
         return {"success": False, "error": f"File not found: {path}"}
 
     with open(full_path, "r", encoding="utf-8") as f:

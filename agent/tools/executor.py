@@ -77,7 +77,8 @@ class ToolExecutor:
     def _read_file(self, tool_input: dict) -> dict:
         return filesystem.read_file(
             self.workspace,
-            tool_input["path"]
+            tool_input["path"],
+            sandbox=self.sandbox,
         )
 
 
