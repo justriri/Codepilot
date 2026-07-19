@@ -85,7 +85,7 @@ def load_config() -> AgentConfig:
 
         default_model_provider=os.environ.get(
             "DEFAULT_MODEL",
-            "anthropic"
+            "deepseek"
         ),
 
 

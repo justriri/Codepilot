@@ -104,11 +104,36 @@ class RunTestsRequest(BaseModel):
 
 @router.post("/analyze")
 def analyze(payload: CodeRequest):
-    return _call_or_502(
-        code_analysis_agent.analyze,
-        payload.code,
-        payload.language,
-    )
+    # #region agent log
+    try:
+        import json as _json
+        open("debug-90c2dc.log", "a", encoding="utf-8").write(_json.dumps({"sessionId": "90c2dc", "hypothesisId": "D", "location": "agent_interface.py:analyze", "message": "analyze endpoint entered", "data": {"code_len": len(payload.code or ""), "language": payload.language}, "timestamp": __import__("time").time() * 1000}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    try:
+        result = _call_or_502(
+            code_analysis_agent.analyze,
+            payload.code,
+            payload.language,
+        )
+        # #region agent log
+        try:
+            import json as _json
+            open("debug-90c2dc.log", "a", encoding="utf-8").write(_json.dumps({"sessionId": "90c2dc", "hypothesisId": "A", "location": "agent_interface.py:analyze:success", "message": "analyze succeeded", "data": {"keys": list(result.keys()) if isinstance(result, dict) else type(result).__name__}, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        return result
+    except Exception as e:
+        # #region agent log
+        try:
+            import json as _json
+            open("debug-90c2dc.log", "a", encoding="utf-8").write(_json.dumps({"sessionId": "90c2dc", "hypothesisId": "A", "location": "agent_interface.py:analyze:error", "message": "analyze failed", "data": {"error_type": type(e).__name__, "error": str(e)[:500]}, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        raise
 
 
 

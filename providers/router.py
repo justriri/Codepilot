@@ -17,6 +17,14 @@ def get_provider(config):
     """config is an AgentConfig (agent/config.py)."""
     provider_name = config.default_model_provider.lower()
 
+    # #region agent log
+    try:
+        import json as _json
+        open("debug-90c2dc.log", "a", encoding="utf-8").write(_json.dumps({"sessionId": "90c2dc", "hypothesisId": "F", "location": "router.py:get_provider", "message": "provider selection", "data": {"requested": provider_name, "deepseek_key_set": bool(config.deepseek_api_key), "anthropic_key_set": bool(config.anthropic_api_key), "deepseek_model": config.deepseek_model, "anthropic_model": config.anthropic_model}, "timestamp": __import__("time").time() * 1000}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
     if provider_name == "anthropic":
         if not config.anthropic_api_key:
             raise RuntimeError("DEFAULT_MODEL=anthropic requires ANTHROPIC_API_KEY to be set in .env.")

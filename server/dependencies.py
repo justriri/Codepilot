@@ -42,6 +42,14 @@ def _ensure_initialized():
 
         provider = get_provider(config)
 
+        # #region agent log
+        try:
+            import json as _json
+            open("debug-90c2dc.log", "a", encoding="utf-8").write(_json.dumps({"sessionId": "90c2dc", "hypothesisId": "D", "location": "dependencies.py:_ensure_initialized", "message": "provider initialized", "data": {"provider": getattr(provider, "name", None), "model": getattr(provider, "model", None), "default_model_provider": getattr(config, "default_model_provider", None)}, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
         _code_analysis_agent = CodeAnalysisAgent(
             provider
         )
