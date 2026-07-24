@@ -44,6 +44,7 @@ class AgentConfig:
     # --- Sandbox settings (E2B cloud) ---
     e2b_api_key: str
     sandbox_ttl_s: int
+    browser_engine: str
 
     # --- Debugging loop settings ---
     max_repair_attempts: int
@@ -148,6 +149,12 @@ def load_config() -> AgentConfig:
                 "600"
             )
         ),
+
+        # auto | firefox | chromium | webkit
+        browser_engine=os.environ.get(
+            "BROWSER_ENGINE",
+            "auto"
+        ).strip().lower(),
 
 
         # --- Debugging loop settings ---

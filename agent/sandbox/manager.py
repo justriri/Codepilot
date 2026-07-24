@@ -24,6 +24,13 @@ import time
 
 from e2b import Sandbox
 
+from agent.browser_engine import (
+    install_command,
+    normalize_engine,
+    probe_command,
+    resolve_fallback_order,
+)
+
 
 class SandboxError(Exception):
     """Raised for sandbox-related failures that tool handlers should
@@ -57,6 +64,7 @@ class SandboxManager:
         self._watchdog_thread = None
         self._playwright_ready = False
         self._runner_scripts_bundled = False
+        self.browser_engine: str | None = None
 
     @property
     def is_active(self) -> bool:
@@ -79,6 +87,13 @@ class SandboxManager:
             self._workdir = None
             workdir = self.get_working_directory()
             self.sandbox.commands.run(f"mkdir -p {workdir}/.sandbox")
+            pw = self._bootstrap_browser_engine()
+            if not pw.get("success"):
+                # Surface bootstrap failures early instead of hanging at browser verification.
+                return {
+                    "success": False,
+                    "error": pw.get("error", "Playwright bootstrap failed during sandbox create"),
+                }
 
         except Exception as e:
             if self.sandbox:
@@ -103,7 +118,8 @@ class SandboxManager:
         return {
             "success": True,
             "sandbox_id": self.sandbox.sandbox_id,
-            "status": "running"
+            "status": "running",
+            "browser_engine": self.browser_engine,
         }
 
     def _start_watchdog(self):
@@ -244,58 +260,108 @@ class SandboxManager:
         self._runner_scripts_bundled = True
         return {"success": True, "uploaded_files": uploaded}
 
-    def _ensure_playwright(self) -> dict:
-        """Install Playwright + Chromium inside the E2B sandbox if needed."""
-        if self._playwright_ready:
-            return {"success": True}
+    def _has_opt_tools(self) -> bool:
+        if not self.is_active:
+            return False
+        try:
+            workdir = self.get_working_directory()
+            res = self.sandbox.commands.run(
+                "test -f /opt/agent-tools/run_test_flow.py && echo opt || echo local",
+                cwd=workdir,
+                timeout=15,
+            )
+            return (res.stdout or "").strip() == "opt"
+        except Exception:
+            return False
+
+    def _bootstrap_browser_engine(self) -> dict:
+        """Install Playwright and select a working browser engine."""
+        if self._playwright_ready and self.browser_engine:
+            return {"success": True, "browser_engine": self.browser_engine}
 
         self._require_active()
         workdir = self.get_working_directory()
 
         try:
-            check = self.sandbox.commands.run(
-                "python3 -c \"import playwright; print('ok')\" 2>/dev/null || echo missing",
+            requested = normalize_engine(getattr(self.config, "browser_engine", "auto"))
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        has_opt = self._has_opt_tools()
+        candidates = resolve_fallback_order(requested, has_opt_tools=has_opt)
+        errors: list[str] = []
+
+        try:
+            pip = self.sandbox.commands.run(
+                "python3 -m pip install -q playwright",
                 cwd=workdir,
-                timeout=30,
+                timeout=120,
             )
         except Exception as e:
-            return {"success": False, "error": f"Playwright check failed: {e}"}
+            return {"success": False, "error": f"pip install playwright failed: {e}"}
+        if pip.exit_code != 0:
+            return {
+                "success": False,
+                "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
+            }
 
-        if (check.stdout or "").strip() != "ok":
+        for engine in candidates:
             try:
-                pip = self.sandbox.commands.run(
-                    "python3 -m pip install -q playwright",
+                install = self.sandbox.commands.run(
+                    install_command(engine),
+                    cwd=workdir,
+                    timeout=600,
+                )
+            except Exception as e:
+                errors.append(f"{engine}: install failed ({e})")
+                continue
+            if install.exit_code != 0:
+                errors.append(
+                    f"{engine}: install exited {install.exit_code} "
+                    f"{(install.stderr or install.stdout or '')[:200]}"
+                )
+                continue
+
+            try:
+                probe = self.sandbox.commands.run(
+                    probe_command(engine),
                     cwd=workdir,
                     timeout=120,
                 )
             except Exception as e:
-                return {"success": False, "error": f"pip install playwright failed: {e}"}
-            if pip.exit_code != 0:
-                return {
-                    "success": False,
-                    "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
-                }
+                errors.append(f"{engine}: probe failed ({e})")
+                continue
+            if probe.exit_code != 0 or "ok" not in (probe.stdout or ""):
+                errors.append(
+                    f"{engine}: probe failed "
+                    f"{(probe.stdout or probe.stderr or '')[:200]}"
+                )
+                continue
 
-        try:
-            install = self.sandbox.commands.run(
-                "python3 -m playwright install chromium 2>&1",
-                cwd=workdir,
-                timeout=300,
-            )
-        except Exception as e:
-            return {"success": False, "error": f"playwright install chromium failed: {e}"}
+            self.browser_engine = engine
+            self._playwright_ready = True
+            self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", engine)
+            if self.workspace_root:
+                local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, "w", encoding="utf-8") as f:
+                    f.write(engine)
+            return {"success": True, "browser_engine": engine}
 
-        if install.exit_code != 0:
-            return {
-                "success": False,
-                "error": (
-                    "playwright install chromium failed: "
-                    f"{install.stderr or install.stdout}"
-                ),
-            }
+        return {
+            "success": False,
+            "error": (
+                "No working browser engine found. Tried: "
+                + ", ".join(candidates)
+                + ". Details: "
+                + " | ".join(errors)
+            ),
+        }
 
-        self._playwright_ready = True
-        return {"success": True}
+    def _browser_env_prefix(self) -> str:
+        if not self.browser_engine:
+            return ""
+        return f"BROWSER_ENGINE={self.browser_engine} "
 
     def sync_from_sandbox(self, paths: list[str] | None = None) -> None:
         """Download specified paths from E2B .sandbox/ back to host workspace if they exist."""
@@ -527,7 +593,10 @@ class SandboxManager:
 
         if is_opt:
             runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
-            command = f"WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+            command = (
+                f"{self._browser_env_prefix()}WORKSPACE_ROOT={workdir} {runner} "
+                f"{workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+            )
         else:
             bundle = self._bundle_test_runner_scripts()
             if not bundle.get("success"):
@@ -539,7 +608,7 @@ class SandboxManager:
                     "error": bundle.get("error", "Failed to bundle test runner scripts"),
                 }
 
-            pw = self._ensure_playwright()
+            pw = self._bootstrap_browser_engine()
             if not pw.get("success"):
                 return {
                     "success": False,
@@ -550,11 +619,14 @@ class SandboxManager:
                 }
 
             runner = f"python3 {workdir}/sandbox/scripts/run_test_flow.py"
-            command = f"PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+            command = (
+                f"{self._browser_env_prefix()}PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH "
+                f"WORKSPACE_ROOT={workdir} {runner} "
+                f"{workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
+            )
 
-        # First Playwright run may include a long bootstrap; allow extra time.
-        exec_timeout = max(timeout, 180)
-        exec_result = self.exec_command(command, timeout=exec_timeout)
+        # Playwright is bootstrapped at sandbox create(); allow headroom for Firefox.
+        exec_result = self.exec_command(command, timeout=max(timeout, 120))
         self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
         try:
