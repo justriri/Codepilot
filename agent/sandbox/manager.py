@@ -82,7 +82,11 @@ class SandboxManager:
             }
 
         try:
-            self.sandbox = Sandbox.create()
+            template_id = (getattr(self.config, "e2b_template_id", "") or "").strip()
+            if template_id:
+                self.sandbox = Sandbox.create(template=template_id)
+            else:
+                self.sandbox = Sandbox.create()
             self._destroyed_event.clear()
             self._workdir = None
             workdir = self.get_working_directory()
@@ -115,9 +119,12 @@ class SandboxManager:
 
         self._start_watchdog()
 
+        template_id = (getattr(self.config, "e2b_template_id", "") or "").strip()
         return {
             "success": True,
             "sandbox_id": self.sandbox.sandbox_id,
+            "template_id": template_id or "default",
+            "uses_opt_tools": self._has_opt_tools(),
             "status": "running",
             "browser_engine": self.browser_engine,
         }
@@ -290,41 +297,44 @@ class SandboxManager:
         has_opt = self._has_opt_tools()
         candidates = resolve_fallback_order(requested, has_opt_tools=has_opt)
         errors: list[str] = []
+        python_bin = "/opt/agent-tools/venv/bin/python3" if has_opt else "python3"
 
-        try:
-            pip = self.sandbox.commands.run(
-                "python3 -m pip install -q playwright",
-                cwd=workdir,
-                timeout=120,
-            )
-        except Exception as e:
-            return {"success": False, "error": f"pip install playwright failed: {e}"}
-        if pip.exit_code != 0:
-            return {
-                "success": False,
-                "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
-            }
-
-        for engine in candidates:
+        if not has_opt:
             try:
-                install = self.sandbox.commands.run(
-                    install_command(engine),
+                pip = self.sandbox.commands.run(
+                    "python3 -m pip install -q playwright",
                     cwd=workdir,
-                    timeout=600,
+                    timeout=120,
                 )
             except Exception as e:
-                errors.append(f"{engine}: install failed ({e})")
-                continue
-            if install.exit_code != 0:
-                errors.append(
-                    f"{engine}: install exited {install.exit_code} "
-                    f"{(install.stderr or install.stdout or '')[:200]}"
-                )
-                continue
+                return {"success": False, "error": f"pip install playwright failed: {e}"}
+            if pip.exit_code != 0:
+                return {
+                    "success": False,
+                    "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
+                }
+
+        for engine in candidates:
+            if not has_opt:
+                try:
+                    install = self.sandbox.commands.run(
+                        install_command(engine),
+                        cwd=workdir,
+                        timeout=600,
+                    )
+                except Exception as e:
+                    errors.append(f"{engine}: install failed ({e})")
+                    continue
+                if install.exit_code != 0:
+                    errors.append(
+                        f"{engine}: install exited {install.exit_code} "
+                        f"{(install.stderr or install.stdout or '')[:200]}"
+                    )
+                    continue
 
             try:
                 probe = self.sandbox.commands.run(
-                    probe_command(engine),
+                    probe_command(engine, python_bin=python_bin),
                     cwd=workdir,
                     timeout=120,
                 )

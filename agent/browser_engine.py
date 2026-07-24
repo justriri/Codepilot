@@ -54,11 +54,11 @@ def install_command(engine: str) -> str:
     )
 
 
-def probe_command(engine: str) -> str:
+def probe_command(engine: str, *, python_bin: str = "python3") -> str:
     args = launch_args(engine)
     args_repr = repr(args)
     return (
-        "python3 -c \""
+        f"{python_bin} -c \""
         "from playwright.sync_api import sync_playwright; "
         "p=sync_playwright().start(); "
         f"b=p.{engine}.launch(headless=True, args={args_repr}); "

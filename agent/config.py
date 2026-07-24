@@ -43,6 +43,7 @@ class AgentConfig:
 
     # --- Sandbox settings (E2B cloud) ---
     e2b_api_key: str
+    e2b_template_id: str
     sandbox_ttl_s: int
     browser_engine: str
 
@@ -141,6 +142,12 @@ def load_config() -> AgentConfig:
             "E2B_API_KEY",
             ""
         ),
+
+        # Optional pre-built E2B template (Playwright at /opt/agent-tools)
+        e2b_template_id=os.environ.get(
+            "E2B_TEMPLATE_ID",
+            ""
+        ).strip(),
 
         # Hard wall-clock cap per sandbox (watchdog auto-destroys after TTL)
         sandbox_ttl_s=int(
