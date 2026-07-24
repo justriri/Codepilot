@@ -114,7 +114,7 @@ class SessionManager:
             config = load_config()
             workspace = Workspace(session.workspace_root)
             provider = get_provider(config)
-            sandbox = SandboxManager(workspace.root, config)
+            sandbox = SandboxManager(workspace.root, config, progress_callback=on_event)
             debugging_agent = DebuggingAgent(provider, workspace, config.debug_agent_max_iterations)
             repair_loop = TestRepairLoop(sandbox, debugging_agent, config.max_repair_attempts)
             executor = ToolExecutor(workspace, sandbox, config.command_timeout_s, repair_loop=repair_loop)

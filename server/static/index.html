@@ -806,6 +806,21 @@ function renderLogsCard(mr) {
       return;
     }
 
+    if (event.type === 'bootstrap_progress') {
+      const items = timeline.querySelectorAll('.timeline-item.tl-running');
+      const lastRunning = items[items.length - 1];
+      if (lastRunning) {
+        const content = lastRunning.querySelector('.timeline-content');
+        let detailEl = content.querySelector('.timeline-bootstrap-detail');
+        if (!detailEl) {
+          detailEl = mk('div', { className: 'timeline-detail timeline-bootstrap-detail' });
+          content.appendChild(detailEl);
+        }
+        detailEl.textContent = event.message;
+      }
+      return;
+    }
+
     if (event.type === 'tool_call') {
       const label = STAGE_LABELS[event.name] || event.name;
       appendTimelineItem(timeline, { state: 'running', label: label, time: time });
