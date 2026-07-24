@@ -23,7 +23,7 @@ class EnvironmentState:
     """
     Temporary state of the disposable environment where the agent runs.
 
-    This represents the machine/container the agent is using to test
+    This represents the cloud sandbox the agent is using to test
     and verify changes.
     """
 

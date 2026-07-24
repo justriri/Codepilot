@@ -3,9 +3,11 @@ Browser Controller.
 
 A small, reusable wrapper around Playwright's sync API providing the
 core primitives needed to drive a browser against a running application.
-Runs INSIDE the sandbox container (baked into the image at
-/opt/agent-tools/), in the same network namespace as the app under test,
-so open_browser(url) reaches the app directly via its internal port.
+Runs INSIDE the E2B cloud sandbox VM, in the same network namespace as
+the app under test, so open_browser(url) reaches the app directly via
+its internal port. When /opt/agent-tools/ is present (custom E2B template),
+scripts are loaded from there; otherwise they are synced from the repo
+and Playwright is installed on first run.
 
 Public API (the literal requested interface):
     open_browser(url)

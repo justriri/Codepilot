@@ -1,5 +1,5 @@
 """
-CLI entry point for running a test flow inside the sandbox container.
+CLI entry point for running a test flow inside the E2B cloud sandbox.
 
 Thin orchestration layer: reads the spec, wires together
 BrowserController + TestingAgent + the report generator, and writes the

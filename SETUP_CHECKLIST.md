@@ -1,81 +1,45 @@
 # End-to-End Setup Checklist
 
 This is a linear checklist for getting the full pipeline running for
-real: Docker + a live Anthropic API key + the seeded-bug test scenario.
+real: **E2B cloud sandbox** + a live AI API key + the seeded-bug test scenario.
+
+> **Architecture reference:** Read [docs/SANDBOX_ARCHITECTURE.md](docs/SANDBOX_ARCHITECTURE.md) first if you are debugging sandbox errors or migrating from the old Docker setup.
 
 ## 0. Audit: what's already implemented vs. what was missing
 
-**Already implemented and verified (via mocked/logic tests, no Docker/API
+**Already implemented and verified (via mocked/logic tests, no E2B/API
 needed for these):**
 - Agent core (plan → act → observe loop), file tools, tool dispatch
-- Docker sandbox lifecycle (create/exec/start/stop/destroy), resource
-  limits, timeouts, watchdog cleanup
-- Browser automation (`BrowserController`) and step-based testing
-  (`TestingAgent`) baked into the sandbox image
+- E2B sandbox lifecycle (create/exec/start/stop/destroy), timeouts, watchdog cleanup
+- Browser automation (`BrowserController`) and step-based testing (`TestingAgent`)
 - Compact + full verification reports
 - `DebuggingAgent` (failure analysis, screenshot-as-image evidence,
   file-tool dispatch) and `TestRepairLoop` (bounded retry, app restart,
   exception safety) — all control-flow verified with mocks
 
-**Gaps found and fixed during this audit (this is what was actually
-missing for a real run):**
-1. **Invalid default model string.** `AGENT_MODEL` defaulted to
-   `claude-sonnet-4-6`, which isn't a real model — every API call would
-   have failed immediately. Fixed to `claude-sonnet-5` in both
-   `agent/config.py` and `.env.example`.
-2. **No error handling around the main agent loop's API call.** An
-   invalid API key (or any Anthropic API error) would crash `main.py`
-   with a raw traceback instead of a clean message. Fixed in
-   `agent/controller.py` — verified with a mocked `AuthenticationError`.
-   (Note: `TestRepairLoop` already handled this correctly for the
-   debugging agent's own API calls — this fix brings the main loop up
-   to the same standard.)
+**Sandbox runtime (requires E2B_API_KEY on your machine):**
+- Real cloud sandbox creation via `Sandbox.create()`
+- Command execution and file sync via E2B SDK
+- Playwright test runs inside the E2B VM
+- Screenshot and report generation
 
-**Still requires your machine to actually validate (cannot be tested in
-this environment — no Docker daemon, no API key available here):**
-- The real Docker build (Chromium/Playwright download)
-- Real container creation, exec, and port mapping
-- The real Claude API call inside `DebuggingAgent.analyze_and_fix`
-- The real Playwright browser run inside the container
-
-## 1. Configure the Claude API key
+## 1. Configure API keys
 
 ```bash
-cd agent_mvp
 cp .env.example .env
 ```
 
 Edit `.env` and set:
+
 ```
-ANTHROPIC_API_KEY=sk-ant-...your real key...
-```
-
-Get a key from the Anthropic Console if you don't have one. The debugging
-agent makes its own, separate API calls (on top of the main agent loop),
-so budget for that — a run with 1-2 repair attempts roughly doubles the
-API calls compared to a bug-free run.
-
-## 2. Configure Docker
-
-Install Docker Desktop (Mac/Windows) or `dockerd` (Linux), then confirm:
-```bash
-docker info
-```
-should print daemon info, not an error. If this fails, nothing past
-`create_sandbox` will work — this is the most common blocker.
-
-Build the sandbox image (this downloads Chromium — the first build can
-take several minutes):
-```bash
-docker build -t agent-sandbox:latest ./sandbox
+E2B_API_KEY=...your E2B key...
+DEEPSEEK_API_KEY=...your key...   # or ANTHROPIC_API_KEY / OPENAI_API_KEY
+DEFAULT_MODEL=deepseek            # match your provider
 ```
 
-Confirm it exists:
-```bash
-docker images | grep agent-sandbox
-```
+Get an E2B key from https://e2b.dev/docs
 
-## 3. Install Python dependencies
+## 2. Install Python dependencies
 
 ```bash
 python -m venv .venv
@@ -83,35 +47,44 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## 4. Verify environment variables are actually loading
+## 3. Verify E2B sandbox connectivity
+
+**Do this before anything else.** If this fails, the full pipeline will fail at `create_sandbox`.
+
+```bash
+python verify_e2b_connection.py
+```
+
+Expected output ends with:
+```
+E2B is correctly configured. SandboxManager will work.
+```
+
+## 4. (Optional) Verify AI provider connectivity
+
+Fast sanity check — no sandbox required:
+
+```bash
+python test_deepseek_connection.py
+```
+
+## 5. Verify environment variables are loading
 
 ```bash
 python -c "
 from agent.config import load_config
 c = load_config()
-print('Model:', c.model)
-print('Docker image:', c.docker_image)
+print('Provider:', c.default_model_provider)
+print('E2B key set:', bool(c.e2b_api_key))
+print('Sandbox TTL (s):', c.sandbox_ttl_s)
 print('Max repair attempts:', c.max_repair_attempts)
-print('API key set:', bool(c.anthropic_api_key) and c.anthropic_api_key != 'your_api_key_here')
 "
 ```
-Expected output:
-```
-Model: claude-sonnet-5
-Docker image: agent-sandbox:latest
-Max repair attempts: 3
-API key set: True
-```
-If `API key set: False` or it raises `RuntimeError`, your `.env` isn't
-being picked up — check you're running from the `agent_mvp/` directory
-and that `.env` (not `.env.example`) has your real key.
 
-## 5. Run the seeded-bug end-to-end test
+## 6. Run the seeded-bug end-to-end test
 
-This is the controlled validation scenario: a real counter app with a
-real, deliberately seeded bug (an `id` mismatch between the HTML button
-and the JS `getElementById` call — a realistic typo, not a contrived
-one), run through the exact production code path `main.py` uses.
+This exercises the exact production code path (`Workspace`, `SandboxManager`,
+`ToolExecutor`, `TestRepairLoop`, `DebuggingAgent`, `generate_report`).
 
 ```bash
 python test_e2e_pipeline.py
@@ -120,11 +93,6 @@ python test_e2e_pipeline.py
 ### Expected output (abridged)
 
 ```
-============================================================
-STEP 0: Load config and seed the buggy project
-============================================================
-Seeded index.html + script.js (with an intentional bug) into .../e2e_test_workspace
-
 ============================================================
 STEP 1: Sandbox creates environment
 ============================================================
@@ -137,52 +105,18 @@ STEP 3: Application starts
  'internal_url': 'http://localhost:3000', ...}
 
 ============================================================
-STEP 4-7: Browser testing runs -> failure detected -> DebuggingAgent
-analyzes -> code fixed -> tests run again
-============================================================
-Final success: True
-Repair attempts used: 1
-  [PASS] step 0: navigate -> Opened http://localhost:3000/ (status 200)
-  [PASS] step 1: assert_visible -> Element is visible
-  [PASS] step 2: assert_text -> Got '0', expected it to contain '0'
-  [PASS] step 3: click -> Clicked '#increment-btn'
-  [PASS] step 4: assert_text -> Got '1', expected it to contain '1'
-
-  Repair attempt 1:
-    Explanation: [Claude's real explanation of the id-mismatch bug and its fix]
-    Files modified: ['script.js']
-
-============================================================
-STEP 8: Verification report is generated
-============================================================
-[full Markdown report content]
-
-============================================================
 RESULT
 ============================================================
 END-TO-END PIPELINE VALIDATION: PASSED
-(Fixed after 1 repair attempt(s).)
 ```
 
-The exact wording of the debugging agent's explanation will vary (it's a
-real LLM call) — what matters is: step 4 fails on the first test run,
-`repair_attempts_used` is 1 (not 0, not 3), `script.js` is listed as
-modified, and the final result is `PASSED`.
-
-Afterward, inspect the evidence directly:
+Afterward, inspect the evidence:
 ```bash
 ls e2e_test_workspace/.sandbox/evidence/
 cat e2e_test_workspace/.sandbox/verification_report.md
-cat e2e_test_workspace/script.js   # should now say 'increment-btn', not 'incrementBtn'
 ```
 
-## 6. (Optional) Run the full natural-language agent
-
-This exercises the complete, open-ended pipeline — but whether the
-debugging loop actually triggers depends on whether Claude happens to
-write a bug on its own first try, which is non-deterministic. Use this
-to validate the *overall* experience, and `test_e2e_pipeline.py` above
-to reliably validate the *debugging loop specifically*.
+## 7. (Optional) Run the full natural-language agent
 
 ```bash
 python main.py "Build a basic web app with a button that increments a counter."
@@ -192,11 +126,16 @@ python main.py "Build a basic web app with a button that increments a counter."
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Could not connect to Docker: ... Is Docker running?` | Docker daemon not running | Start Docker Desktop / `sudo systemctl start docker` |
-| `Failed to create sandbox: 404 Client Error ... No such image` | Sandbox image not built yet | `docker build -t agent-sandbox:latest ./sandbox` |
-| `ANTHROPIC_API_KEY is not set` | `.env` missing or not in cwd | Run from `agent_mvp/`; confirm `.env` exists (not just `.env.example`) |
-| `Authentication with the Anthropic API failed` | Invalid/expired key | Check the key value in `.env`, no extra quotes/whitespace |
-| `run_test_flow` result has `"error": "Test runner did not produce a result file..."` | Playwright/Chromium failed inside the container | `docker exec` into a running container and check `/opt/agent-tools/venv/bin/playwright --version`; rebuild the image if corrupted |
-| Container port has no host mapping | App failed to bind the port | Read `.sandbox/app.log` via `read_file` — usually a startup error in the app itself |
-| Everything passes on attempt 1, no repair attempts shown | Working as intended — no bug to fix | This is the expected happy path when running the *unmodified* natural-language agent; use `test_e2e_pipeline.py` to reliably see the debugging loop |
-| Script hangs at `STEP 4-7` for a long time | `SANDBOX_TTL_S`/timeouts may need tuning, or Chromium is slow to start under low resources | Bump `SANDBOX_MEM_LIMIT` in `.env`; check `docker stats` while it runs |
+| `E2B_API_KEY is not set` | Missing from `.env` | Add key; run from repo root so `.env` loads |
+| `E2B sandbox creation failed` | Invalid key or no quota | Check key at e2b.dev; run `verify_e2b_connection.py` |
+| `DEEPSEEK_API_KEY is not set` | AI provider not configured | Set the key for your chosen `DEFAULT_MODEL` |
+| `run_test_flow` → no result file | Playwright failed in E2B VM | Check runner stdout/stderr in tool result; increase timeout |
+| Port exposure failed | App didn't bind to port | Read `.sandbox/app.log` via `read_file` |
+| Docs mention Docker | Stale migration artifacts | Ignore Docker; see [docs/SANDBOX_ARCHITECTURE.md](docs/SANDBOX_ARCHITECTURE.md) |
+
+## Legacy: Docker sandbox (removed from runtime)
+
+The project previously used a local Docker image (`sandbox/Dockerfile`).
+**The runtime no longer uses Docker.** The Dockerfile is kept for reference
+only. Do not run `verify_docker_connection.py` — it was removed. Use
+`verify_e2b_connection.py` instead.

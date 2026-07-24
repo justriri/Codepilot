@@ -64,7 +64,7 @@ class CodeAnalysisAgent:
         timeout: int = 30,
     ) -> dict:
         """
-        Runs code inside a fresh Docker sandbox and executes verify_command.
+        Runs code inside a fresh E2B cloud sandbox and executes verify_command.
         """
 
         workspace = Workspace(workspace_root)

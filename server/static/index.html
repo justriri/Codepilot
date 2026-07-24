@@ -370,7 +370,7 @@
   <section class="landing-features">
     <div class="landing-feature-card">
       <div class="landing-feature-title">Isolated Execution</div>
-      <p>Every submission runs in its own Docker sandbox — dependencies installed, application started, nothing shared between runs.</p>
+      <p>Every submission runs in its own E2B cloud sandbox — dependencies installed, application started, nothing shared between runs.</p>
     </div>
     <div class="landing-feature-card">
       <div class="landing-feature-title">Real Evidence</div>
@@ -693,7 +693,7 @@
     card.style.display = 'block';
     clearChildren(body);
     const rows = [];
-    if (result.sandbox_id) rows.push(['Container', result.sandbox_id]);
+    if (result.sandbox_id) rows.push(['Sandbox', result.sandbox_id]);
     if (result.status) rows.push(['Status', result.status]);
     if (result.internal_url) rows.push(['Internal URL', result.internal_url]);
     rows.forEach(([k, v]) => {

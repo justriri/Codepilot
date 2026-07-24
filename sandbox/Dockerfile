@@ -1,3 +1,7 @@
+# LEGACY: This Dockerfile was used for the original Docker-based sandbox.
+# The runtime now uses E2B cloud sandboxes — you do NOT need to build this
+# image for normal operation. See docs/SANDBOX_ARCHITECTURE.md.
+#
 # Sandbox image: the isolated environment the agent's code runs AND is
 # verified in.
 #

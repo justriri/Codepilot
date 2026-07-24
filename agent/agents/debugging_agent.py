@@ -9,9 +9,9 @@ gets a different system prompt and a much smaller tool set — just the
 file tools. It never touches the sandbox lifecycle directly (no
 create_sandbox / install_dependencies / start_application / etc).
 
-Runs on the HOST, not inside the sandbox container:
+Runs on the HOST, not inside the E2B cloud sandbox:
   - It needs API credentials for whichever provider is configured, which
-    should never be exposed inside the container the agent's own
+    should never be exposed inside the sandbox where the agent's own
     generated code executes in.
   - It reuses agent/tools/filesystem.py directly (not the full
     ToolExecutor) to avoid a circular construction dependency: the

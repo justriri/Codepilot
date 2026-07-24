@@ -256,7 +256,7 @@ def generate_tests(payload: GenerateTestsRequest):
 def run_tests(payload: RunTestsRequest):
     """
     Builds a test plan from generated tests and executes it once
-    inside Docker.
+    inside the E2B cloud sandbox.
     """
 
     from agent.agents import test_plan as test_plan_module

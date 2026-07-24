@@ -2,12 +2,12 @@
 Session Manager.
 
 Runs one agent session per web request in its own background thread,
-with its own Workspace, SandboxManager (-> its own Docker container),
+with its own Workspace, SandboxManager (-> its own E2B cloud sandbox),
 DebuggingAgent, and TestRepairLoop — fully isolated from any other
 concurrent session, mirroring exactly what main.py builds for a single
 CLI run. SandboxManager is explicitly one-sandbox-per-session (see its
 own docstring), so reusing a single shared instance across concurrent
-web requests would let two users collide on the same container; this
+web requests would let two users collide on the same sandbox; this
 avoids that by constructing the whole dependency graph fresh per
 session, same as main.py does.
 
