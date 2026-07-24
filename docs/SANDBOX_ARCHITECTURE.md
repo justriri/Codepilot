@@ -376,7 +376,8 @@ python test_e2e_pipeline.py
 | `E2B sandbox creation failed` | Missing or invalid `E2B_API_KEY` | Set key in `.env`; run `verify_e2b_connection.py` |
 | "Is Docker running?" in old docs/errors | Stale migration artifacts | Ignore Docker; use E2B path (this doc) |
 | `No active sandbox. Call create_sandbox first` | Agent skipped `create_sandbox` tool | Ensure tool order: create → install → start → test |
-| `Test runner did not produce a result file` | Playwright install failed in E2B VM | Check runner stdout/stderr in tool result; retry with longer timeout |
+| `run_test_flow` → no result file | Playwright/scripts missing in E2B VM | Check runner stdout/stderr; ensure `sandbox/scripts` bundling is present |
+| Browser Verification hangs then times out | Playwright bootstrap on first run | Normal on first run (Chromium download); should complete within ~3 min |
 | Port exposure failed | App didn't bind to expected port | Read `.sandbox/app.log` via `read_file` |
 | Every fix breaks something else | Incomplete migration | Read this doc; finish E2B setup before chasing individual errors |
 

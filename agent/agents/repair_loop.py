@@ -23,6 +23,20 @@ class TestRepairLoop:
         self.debugging_agent = debugging_agent
         self.max_repair_attempts = max_repair_attempts
 
+    @staticmethod
+    def _is_infrastructure_failure(result: dict) -> bool:
+        """Runner/setup failures should not trigger code repair attempts."""
+        err = (result.get("error") or "").lower()
+        markers = (
+            "test runner did not produce",
+            "test flow runner failed",
+            "playwright install",
+            "failed to bundle test runner",
+            "failed to install playwright",
+            "test runner scripts not found",
+        )
+        return any(m in err for m in markers)
+
     def run(self, tool_input: dict) -> dict:
         base_url = tool_input["base_url"]
         steps = tool_input.get("steps", [])
@@ -30,6 +44,11 @@ class TestRepairLoop:
         timeout = tool_input.get("timeout", 90)
 
         result = self.sandbox.run_test_flow(base_url, steps, record_video, timeout)
+
+        if self._is_infrastructure_failure(result):
+            result["repair_attempts"] = []
+            result["repair_attempts_used"] = 0
+            return result
 
         repair_log = []
         attempts_used = 0
