@@ -55,6 +55,8 @@ class SandboxManager:
         self._destroyed_event = threading.Event()
         self._destroyed_event.set()  # starts "destroyed" until create() runs
         self._watchdog_thread = None
+        self._playwright_ready = False
+        self._runner_scripts_bundled = False
 
     @property
     def is_active(self) -> bool:
@@ -198,6 +200,102 @@ class SandboxManager:
                     pass
 
         return {"success": True, "synced_files": synced_count}
+
+    def _repo_scripts_dir(self) -> str:
+        """Path to sandbox/scripts in the CodePilot repo (on the host)."""
+        return os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "sandbox", "scripts")
+        )
+
+    def _bundle_test_runner_scripts(self) -> dict:
+        """
+        Upload the Playwright test runner scripts into the E2B workspace.
+
+        Web session workspaces only contain agent-created project files.
+        Without this step, run_test_flow looks for {workdir}/sandbox/scripts/
+        which does not exist on a default E2B template.
+        """
+        if self._runner_scripts_bundled:
+            return {"success": True, "uploaded_files": 0, "note": "already bundled"}
+
+        self._require_active()
+        scripts_dir = self._repo_scripts_dir()
+        if not os.path.isdir(scripts_dir):
+            return {
+                "success": False,
+                "error": f"Test runner scripts not found at {scripts_dir}",
+            }
+
+        workdir = self.get_working_directory()
+        uploaded = 0
+        for root, dirs, files in os.walk(scripts_dir):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", ".pytest_cache")]
+            for filename in files:
+                if filename.endswith((".pyc", ".pyo")):
+                    continue
+                local_path = os.path.join(root, filename)
+                rel = os.path.relpath(local_path, scripts_dir).replace("\\", "/")
+                remote_path = f"{workdir}/sandbox/scripts/{rel}"
+                with open(local_path, "rb") as f:
+                    content = f.read()
+                self.sandbox.files.write(remote_path, content)
+                uploaded += 1
+
+        self._runner_scripts_bundled = True
+        return {"success": True, "uploaded_files": uploaded}
+
+    def _ensure_playwright(self) -> dict:
+        """Install Playwright + Chromium inside the E2B sandbox if needed."""
+        if self._playwright_ready:
+            return {"success": True}
+
+        self._require_active()
+        workdir = self.get_working_directory()
+
+        try:
+            check = self.sandbox.commands.run(
+                "python3 -c \"import playwright; print('ok')\" 2>/dev/null || echo missing",
+                cwd=workdir,
+                timeout=30,
+            )
+        except Exception as e:
+            return {"success": False, "error": f"Playwright check failed: {e}"}
+
+        if (check.stdout or "").strip() != "ok":
+            try:
+                pip = self.sandbox.commands.run(
+                    "python3 -m pip install -q playwright",
+                    cwd=workdir,
+                    timeout=120,
+                )
+            except Exception as e:
+                return {"success": False, "error": f"pip install playwright failed: {e}"}
+            if pip.exit_code != 0:
+                return {
+                    "success": False,
+                    "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
+                }
+
+        try:
+            install = self.sandbox.commands.run(
+                "python3 -m playwright install chromium 2>&1",
+                cwd=workdir,
+                timeout=300,
+            )
+        except Exception as e:
+            return {"success": False, "error": f"playwright install chromium failed: {e}"}
+
+        if install.exit_code != 0:
+            return {
+                "success": False,
+                "error": (
+                    "playwright install chromium failed: "
+                    f"{install.stderr or install.stdout}"
+                ),
+            }
+
+        self._playwright_ready = True
+        return {"success": True}
 
     def sync_from_sandbox(self, paths: list[str] | None = None) -> None:
         """Download specified paths from E2B .sandbox/ back to host workspace if they exist."""
@@ -431,16 +529,32 @@ class SandboxManager:
             runner = "/opt/agent-tools/venv/bin/python3 /opt/agent-tools/run_test_flow.py"
             command = f"WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
         else:
-            if not getattr(self, "_playwright_checked", False):
-                try:
-                    self.sandbox.commands.run("python3 -m pip install -q playwright && python3 -m playwright install --with-deps chromium", cwd=workdir, timeout=180)
-                except Exception:
-                    pass
-                self._playwright_checked = True
+            bundle = self._bundle_test_runner_scripts()
+            if not bundle.get("success"):
+                return {
+                    "success": False,
+                    "steps": [],
+                    "screenshots": [],
+                    "video": None,
+                    "error": bundle.get("error", "Failed to bundle test runner scripts"),
+                }
+
+            pw = self._ensure_playwright()
+            if not pw.get("success"):
+                return {
+                    "success": False,
+                    "steps": [],
+                    "screenshots": [],
+                    "video": None,
+                    "error": pw.get("error", "Failed to install Playwright"),
+                }
+
             runner = f"python3 {workdir}/sandbox/scripts/run_test_flow.py"
             command = f"PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
 
-        exec_result = self.exec_command(command, timeout=timeout)
+        # First Playwright run may include a long bootstrap; allow extra time.
+        exec_timeout = max(timeout, 180)
+        exec_result = self.exec_command(command, timeout=exec_timeout)
         self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
         try:

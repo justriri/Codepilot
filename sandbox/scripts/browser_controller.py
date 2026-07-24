@@ -70,7 +70,8 @@ class BrowserController:
         from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch()
+        # Headless is required in E2B cloud sandboxes (no display server).
+        self._browser = self._playwright.chromium.launch(headless=True)
 
         context_kwargs = {}
         if self.record_video:
