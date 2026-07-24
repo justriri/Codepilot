@@ -26,7 +26,7 @@ This validates the workflow:
         v
     Verification report is generated
 
-Requires: Docker running locally, and a real ANTHROPIC_API_KEY in .env
+Requires: E2B_API_KEY and a real ANTHROPIC_API_KEY (or your configured provider) in .env
 (the debugging agent makes a real Claude API call to diagnose and fix
 the seeded bug).
 
@@ -120,7 +120,7 @@ def main():
         result = executor.execute("create_sandbox", {})
         print(result)
         if not result.get("success"):
-            print("\nFAILED at sandbox creation — is Docker running? See troubleshooting in the README.")
+            print("\nFAILED at sandbox creation — is E2B_API_KEY set? Run: python verify_e2b_connection.py")
             sys.exit(1)
 
         section("STEP 2: Install dependencies (none needed for static HTML/JS)")

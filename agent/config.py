@@ -41,11 +41,8 @@ class AgentConfig:
     local_model_name: str
     local_model_base_url: str
 
-    # --- Sandbox settings ---
-    docker_image: str
-    sandbox_mem_limit: str
-    sandbox_nano_cpus: int
-    sandbox_pids_limit: int
+    # --- Sandbox settings (E2B cloud) ---
+    e2b_api_key: str
     sandbox_ttl_s: int
 
     # --- Debugging loop settings ---
@@ -137,34 +134,14 @@ def load_config() -> AgentConfig:
         ),
 
 
-        # --- Sandbox settings ---
+        # --- Sandbox settings (E2B cloud) ---
 
-        docker_image=os.environ.get(
-            "DOCKER_IMAGE",
-            "agent-sandbox:latest"
+        e2b_api_key=os.environ.get(
+            "E2B_API_KEY",
+            ""
         ),
 
-        sandbox_mem_limit=os.environ.get(
-            "SANDBOX_MEM_LIMIT",
-            "512m"
-        ),
-
-        # 1_000_000_000 nano_cpus == 1 full CPU core
-        sandbox_nano_cpus=int(
-            os.environ.get(
-                "SANDBOX_NANO_CPUS",
-                "1000000000"
-            )
-        ),
-
-        sandbox_pids_limit=int(
-            os.environ.get(
-                "SANDBOX_PIDS_LIMIT",
-                "128"
-            )
-        ),
-
-        # Hard wall-clock cap per sandbox
+        # Hard wall-clock cap per sandbox (watchdog auto-destroys after TTL)
         sandbox_ttl_s=int(
             os.environ.get(
                 "SANDBOX_TTL_S",

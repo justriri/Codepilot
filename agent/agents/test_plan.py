@@ -2,7 +2,7 @@
 Test Plan Builder.
 
 Turns generated test-case strings (from BaseProvider.generate_tests())
-into something concretely executable inside a Docker sandbox.
+into something concretely executable inside the E2B cloud sandbox.
 
 Design choice: combine the solution code and generated tests into ONE
 file, run directly with the plain interpreter (python/node) — not a

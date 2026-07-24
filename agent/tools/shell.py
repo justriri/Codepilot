@@ -2,12 +2,11 @@
 DEPRECATED as of the sandbox layer.
 
 This local-subprocess implementation is no longer wired into
-ToolExecutor — run_command now executes inside the Docker sandbox via
+ToolExecutor — run_command executes inside the E2B cloud sandbox via
 SandboxManager.exec_command instead (see agent/sandbox/manager.py).
 
-Kept in the repo only as a reference for a "no-Docker" local execution
-mode, e.g. if you want a lighter-weight dev setup without Docker
-installed. Do not re-wire this for anything beyond trusted local use —
+Kept in the repo only as a reference for local execution without a
+cloud sandbox. Do not re-wire this for anything beyond trusted local use —
 it has none of the sandbox's resource limits or isolation.
 """
 

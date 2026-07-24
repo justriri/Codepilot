@@ -129,7 +129,7 @@ TOOL_DEFINITIONS = [
                 },
                 "port": {
                     "type": "integer",
-                    "description": "The port the app listens on inside the container. Defaults to 3000.",
+                    "description": "The port the app listens on inside the sandbox. Defaults to 3000.",
                 },
             },
             "required": ["command"],

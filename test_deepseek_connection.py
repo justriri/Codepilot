@@ -1,13 +1,13 @@
 """
-DeepSeek connection test — no Docker required.
+DeepSeek connection test — no sandbox required.
 
 Tests the provider layer in isolation: constructs a DeepSeekProvider
 from your .env config and calls its semantic methods
 (analyze_code/explain_error/suggest_fix/rewrite_code) against a real,
 intentionally buggy code snippet. This is the fast sanity check to run
-BEFORE the full Docker-based pipeline test — if your DeepSeek API key
+BEFORE the full E2B pipeline test — if your DeepSeek API key
 or connection is wrong, you'll find out in seconds here rather than
-after Docker has already spun up a container.
+after a cloud sandbox has already been created.
 
 Requires: DEEPSEEK_API_KEY set in .env. Does NOT require DEFAULT_MODEL
 to be set to deepseek — this script always uses DeepSeek explicitly,
@@ -93,7 +93,7 @@ def main():
 
     section("RESULT")
     print("DeepSeek connection is working: real API calls succeeded and returned")
-    print("structured analysis of real buggy code, with no Docker involved.")
+    print("structured analysis of real buggy code, with no sandbox involved.")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 Tool execution layer.
 
 Single dispatch point between model tool calls and actual implementations.
-All commands execute inside the sandbox container.
+All commands execute inside the E2B cloud sandbox.
 """
 
 from agent.sandbox.manager import SandboxManager, SandboxError

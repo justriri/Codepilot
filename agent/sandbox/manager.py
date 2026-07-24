@@ -106,9 +106,9 @@ class SandboxManager:
 
     def _start_watchdog(self):
         """
-        Safety net: force-destroy the container if it outlives its TTL,
+        Safety net: force-destroy the sandbox if it outlives its TTL,
         regardless of whether the agent ever calls destroy_sandbox. Protects
-        against runaway loops or crashed sessions leaking containers.
+        against runaway loops or crashed sessions leaking sandboxes.
         """
         ttl = self.config.sandbox_ttl_s
 

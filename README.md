@@ -65,9 +65,13 @@ Uses AI models to analyze problems, suggest fixes, and help developers improve t
 
 - Python
 - FastAPI
-- Docker Sandbox
-- Browser Automation
+- E2B Cloud Sandbox
+- Browser Automation (Playwright)
 - AI Model Providers (DeepSeek/OpenAI/Anthropic compatible)
+
+## Architecture
+
+See **[docs/SANDBOX_ARCHITECTURE.md](docs/SANDBOX_ARCHITECTURE.md)** for diagrams of how the sandbox layer works — including the original Docker design, the current E2B implementation, and the target provider boundary.
 
 ## Setup
 
@@ -76,3 +80,10 @@ Clone the repository:
 ```bash
 git clone https://github.com/justriri/Codepilot.git
 cd Codepilot
+cp .env.example .env
+# Set E2B_API_KEY and your AI provider key in .env
+pip install -r requirements.txt
+python verify_e2b_connection.py
+```
+
+For the full end-to-end checklist, see [SETUP_CHECKLIST.md](SETUP_CHECKLIST.md).
