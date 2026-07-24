@@ -31,6 +31,8 @@ import glob
 import os
 import shutil
 
+from browser_utils import launch_args, read_engine_from_workspace
+
 
 class BrowserController:
     def __init__(
@@ -69,10 +71,22 @@ class BrowserController:
 
         from playwright.sync_api import sync_playwright
 
+        engine = (
+            os.environ.get("BROWSER_ENGINE", "").strip().lower()
+            or read_engine_from_workspace(self.workspace_root)
+            or "firefox"
+        )
+        if engine not in ("firefox", "chromium", "webkit"):
+            engine = "firefox"
+
         self._playwright = sync_playwright().start()
-        # Firefox is reliable on E2B cloud VMs; Chromium headless_shell often
-        # hangs or misses system libraries despite apt-get installs.
-        self._browser = self._playwright.firefox.launch(headless=True)
+        browser_type = getattr(self._playwright, engine)
+        launch_kwargs = {"headless": True}
+        args = launch_args(engine)
+        if args:
+            launch_kwargs["args"] = args
+        self._browser = browser_type.launch(**launch_kwargs)
+        self._browser_engine = engine
 
         context_kwargs = {}
         if self.record_video:

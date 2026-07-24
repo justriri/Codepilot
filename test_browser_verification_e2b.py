@@ -39,10 +39,17 @@ def main():
     executor = ToolExecutor(workspace, sandbox, config.command_timeout_s)
 
     steps = [
-        ("create_sandbox", {}),
         ("create_file", {"path": "index.html", "content": HTML}),
         ("start_application", {"command": "python3 -m http.server 3000", "port": 3000}),
     ]
+
+    print("\n--- create_sandbox ---")
+    create_result = executor.execute("create_sandbox", {})
+    print(create_result)
+    if not create_result.get("success"):
+        return 1
+    if create_result.get("browser_engine"):
+        print(f"browser_engine={create_result['browser_engine']}")
 
     for name, inp in steps:
         print(f"\n--- {name} ---")

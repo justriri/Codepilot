@@ -160,6 +160,7 @@ flowchart TB
 # .env
 E2B_API_KEY=your_key_here
 SANDBOX_TTL_S=600   # optional watchdog timeout
+BROWSER_ENGINE=auto # auto | firefox | chromium | webkit
 ```
 
 Verify before running the full pipeline:
