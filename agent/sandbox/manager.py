@@ -32,6 +32,8 @@ from agent.browser_engine import (
     resolve_fallback_order,
 )
 
+_BINARY_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".webm", ".mp4"})
+
 
 class SandboxError(Exception):
     """Raised for sandbox-related failures that tool handlers should
@@ -431,6 +433,27 @@ class SandboxManager:
             return ""
         return f"BROWSER_ENGINE={self.browser_engine} "
 
+    def _is_binary_workspace_path(self, rel_path: str) -> bool:
+        return os.path.splitext(rel_path.lower())[1] in _BINARY_EXTENSIONS
+
+    def _write_sandbox_payload_to_host(self, content, local_path: str, *, binary: bool) -> None:
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+        if binary:
+            if isinstance(content, str):
+                payload = content.encode("utf-8", errors="surrogateescape")
+            else:
+                payload = content
+            with open(local_path, "wb") as f:
+                f.write(payload)
+            return
+
+        if isinstance(content, bytes):
+            text = content.decode("utf-8", errors="replace")
+        else:
+            text = content
+        with open(local_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
     def sync_from_sandbox(self, paths: list[str] | None = None) -> None:
         """Download specified paths from E2B .sandbox/ back to host workspace if they exist."""
         if not self.is_active or not self.workspace_root:
@@ -447,15 +470,82 @@ class SandboxManager:
             try:
                 content = self.sandbox.files.read(remote_path)
                 if content is not None:
-                    if isinstance(content, bytes):
-                        content_str = content.decode("utf-8", errors="replace")
-                    else:
-                        content_str = content
-                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                    with open(local_path, "w", encoding="utf-8") as f:
-                        f.write(content_str)
+                    self._write_sandbox_payload_to_host(
+                        content,
+                        local_path,
+                        binary=self._is_binary_workspace_path(clean_rel),
+                    )
             except Exception:
                 pass
+
+    def sync_evidence_from_sandbox(self, test_result: dict | None = None) -> dict:
+        """
+        Pull screenshots and video from E2B into the host workspace so the
+        web UI can serve them via /api/sessions/{id}/evidence/...
+        """
+        if not self.is_active or not self.workspace_root:
+            return {"synced": []}
+
+        try:
+            workdir = self.get_working_directory()
+        except Exception:
+            return {"synced": []}
+
+        rel_paths: set[str] = set()
+        if test_result:
+            for path in test_result.get("screenshots", []) or []:
+                if path:
+                    rel_paths.add(path.lstrip("/"))
+            video = test_result.get("video")
+            if video:
+                rel_paths.add(video.lstrip("/"))
+            for step in test_result.get("steps", []) or []:
+                shot = step.get("screenshot")
+                if shot:
+                    rel_paths.add(shot.lstrip("/"))
+            for eng_result in (test_result.get("multi_browser") or {}).values():
+                for path in eng_result.get("screenshots", []) or []:
+                    if path:
+                        rel_paths.add(path.lstrip("/"))
+                eng_video = eng_result.get("video")
+                if eng_video:
+                    rel_paths.add(eng_video.lstrip("/"))
+
+        evidence_glob = f"{workdir}/.sandbox/evidence"
+        try:
+            listed = self.sandbox.commands.run(
+                f"find {evidence_glob} -type f ! -path '*/_video_tmp/*' 2>/dev/null || true",
+                cwd=workdir,
+                timeout=30,
+            )
+            prefix = f"{workdir}/"
+            for line in (listed.stdout or "").splitlines():
+                remote = line.strip()
+                if not remote or remote == evidence_glob:
+                    continue
+                if remote.startswith(prefix):
+                    rel_paths.add(remote[len(prefix):])
+        except Exception:
+            pass
+
+        synced: list[str] = []
+        for rel_path in sorted(rel_paths):
+            remote_path = f"{workdir}/{rel_path.lstrip('/')}"
+            local_path = os.path.join(self.workspace_root, rel_path.lstrip("/"))
+            try:
+                content = self.sandbox.files.read(remote_path)
+                if content is None:
+                    continue
+                self._write_sandbox_payload_to_host(
+                    content,
+                    local_path,
+                    binary=self._is_binary_workspace_path(rel_path),
+                )
+                synced.append(rel_path)
+            except Exception:
+                pass
+
+        return {"synced": synced}
 
     def read_sandbox_file(self, path: str) -> str | None:
         """Read a file directly from the E2B sandbox without needing host bind-mounts."""
@@ -761,6 +851,10 @@ class SandboxManager:
 
         if engine:
             test_result["browser_engine"] = engine
+
+        evidence_sync = self.sync_evidence_from_sandbox(test_result)
+        if evidence_sync.get("synced"):
+            test_result["evidence_synced"] = evidence_sync["synced"]
         return test_result
 
     def run_test_flow(self, base_url: str, steps: list, record_video: bool = False, timeout: int = 90) -> dict:

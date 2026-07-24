@@ -81,6 +81,14 @@ def main():
     )
     print(f"success={test_result.get('success')}")
     print(f"steps passed={sum(1 for s in test_result.get('steps', []) if s.get('passed'))}/{len(test_result.get('steps', []))}")
+    synced = test_result.get("evidence_synced") or []
+    if synced:
+        print(f"evidence_synced={len(synced)} files")
+        for rel in synced:
+            local = os.path.join(TEST_DIR, rel)
+            print(f"  {rel}: {'OK' if os.path.isfile(local) else 'MISSING'}")
+    elif test_result.get("screenshots"):
+        print("WARNING: screenshots reported but evidence_synced is empty")
     if test_result.get("error"):
         print(f"error={test_result['error']}")
     if test_result.get("runner_stdout"):
