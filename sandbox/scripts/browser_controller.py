@@ -70,8 +70,9 @@ class BrowserController:
         from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
-        # Headless is required in E2B cloud sandboxes (no display server).
-        self._browser = self._playwright.chromium.launch(headless=True)
+        # Firefox is reliable on E2B cloud VMs; Chromium headless_shell often
+        # hangs or misses system libraries despite apt-get installs.
+        self._browser = self._playwright.firefox.launch(headless=True)
 
         context_kwargs = {}
         if self.record_video:

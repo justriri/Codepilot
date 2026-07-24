@@ -259,21 +259,15 @@ class SandboxManager:
         self._require_active()
         workdir = self.get_working_directory()
 
-        # E2B Linux VMs need OS libraries Playwright's Chromium binary depends on.
-        # install-deps often fails silently without root; apt-get is more reliable.
-        deps_cmd = (
-            "sudo apt-get update -qq && "
-            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
-            "libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 "
-            "libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
-            "libgbm1 libasound2 libpango-1.0-0 libcairo2 libxshmfence1 "
-            "fonts-liberation"
-        )
+        # E2B Linux VMs: use Firefox — Chromium headless_shell hangs on E2B.
         bootstrap_cmd = (
             "python3 -m pip install -q playwright && "
-            f"{deps_cmd} && "
-            "python3 -m playwright install chromium && "
-            "find /usr/lib -name 'libnspr4.so*' | head -1 | grep -q ."
+            "(sudo python3 -m playwright install-deps firefox "
+            "|| python3 -m playwright install-deps firefox) && "
+            "python3 -m playwright install firefox && "
+            "python3 -c \"from playwright.sync_api import sync_playwright; "
+            "p=sync_playwright().start(); b=p.firefox.launch(headless=True); "
+            "b.close(); p.stop(); print('ok')\""
         )
         try:
             bootstrap = self.sandbox.commands.run(
@@ -551,8 +545,8 @@ class SandboxManager:
             runner = f"python3 {workdir}/sandbox/scripts/run_test_flow.py"
             command = f"PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
 
-        # Playwright is bootstrapped at sandbox create(); test run should be quick.
-        exec_result = self.exec_command(command, timeout=timeout)
+        # Playwright is bootstrapped at sandbox create(); allow headroom for Firefox.
+        exec_result = self.exec_command(command, timeout=max(timeout, 120))
         self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
         try:

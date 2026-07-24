@@ -57,7 +57,7 @@ def main():
     base_url = start.get("internal_url", "http://localhost:3000")
 
     print(f"\n--- run_test_flow (base_url={base_url}) ---")
-    print("First run may take 2-3 min while Playwright/Chromium installs in E2B...")
+    print("First run may take ~1-2 min while Playwright/Firefox installs in E2B...")
     test_result = executor.execute(
         "run_test_flow",
         {
