@@ -79,6 +79,13 @@ class SandboxManager:
             self._workdir = None
             workdir = self.get_working_directory()
             self.sandbox.commands.run(f"mkdir -p {workdir}/.sandbox")
+            pw = self._ensure_playwright()
+            if not pw.get("success"):
+                # Surface bootstrap failures early instead of hanging at browser verification.
+                return {
+                    "success": False,
+                    "error": pw.get("error", "Playwright bootstrap failed during sandbox create"),
+                }
 
         except Exception as e:
             if self.sandbox:
@@ -252,45 +259,37 @@ class SandboxManager:
         self._require_active()
         workdir = self.get_working_directory()
 
+        # E2B Linux VMs need OS libraries Playwright's Chromium binary depends on.
+        # install-deps often fails silently without root; apt-get is more reliable.
+        deps_cmd = (
+            "sudo apt-get update -qq && "
+            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+            "libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 "
+            "libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 "
+            "libgbm1 libasound2 libpango-1.0-0 libcairo2 libxshmfence1 "
+            "fonts-liberation"
+        )
+        bootstrap_cmd = (
+            "python3 -m pip install -q playwright && "
+            f"{deps_cmd} && "
+            "python3 -m playwright install chromium && "
+            "find /usr/lib -name 'libnspr4.so*' | head -1 | grep -q ."
+        )
         try:
-            check = self.sandbox.commands.run(
-                "python3 -c \"import playwright; print('ok')\" 2>/dev/null || echo missing",
+            bootstrap = self.sandbox.commands.run(
+                bootstrap_cmd,
                 cwd=workdir,
-                timeout=30,
+                timeout=600,
             )
         except Exception as e:
-            return {"success": False, "error": f"Playwright check failed: {e}"}
+            return {"success": False, "error": f"Playwright bootstrap failed: {e}"}
 
-        if (check.stdout or "").strip() != "ok":
-            try:
-                pip = self.sandbox.commands.run(
-                    "python3 -m pip install -q playwright",
-                    cwd=workdir,
-                    timeout=120,
-                )
-            except Exception as e:
-                return {"success": False, "error": f"pip install playwright failed: {e}"}
-            if pip.exit_code != 0:
-                return {
-                    "success": False,
-                    "error": f"pip install playwright failed: {pip.stderr or pip.stdout}",
-                }
-
-        try:
-            install = self.sandbox.commands.run(
-                "python3 -m playwright install chromium 2>&1",
-                cwd=workdir,
-                timeout=300,
-            )
-        except Exception as e:
-            return {"success": False, "error": f"playwright install chromium failed: {e}"}
-
-        if install.exit_code != 0:
+        if bootstrap.exit_code != 0:
             return {
                 "success": False,
                 "error": (
-                    "playwright install chromium failed: "
-                    f"{install.stderr or install.stdout}"
+                    "Playwright bootstrap failed: "
+                    f"{bootstrap.stderr or bootstrap.stdout}"
                 ),
             }
 
@@ -552,9 +551,8 @@ class SandboxManager:
             runner = f"python3 {workdir}/sandbox/scripts/run_test_flow.py"
             command = f"PYTHONPATH={workdir}:{workdir}/sandbox/scripts:$PYTHONPATH WORKSPACE_ROOT={workdir} {runner} {workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
 
-        # First Playwright run may include a long bootstrap; allow extra time.
-        exec_timeout = max(timeout, 180)
-        exec_result = self.exec_command(command, timeout=exec_timeout)
+        # Playwright is bootstrapped at sandbox create(); test run should be quick.
+        exec_result = self.exec_command(command, timeout=timeout)
         self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
         try:
