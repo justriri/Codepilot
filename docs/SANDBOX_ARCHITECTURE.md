@@ -378,7 +378,7 @@ python test_e2e_pipeline.py
 | `No active sandbox. Call create_sandbox first` | Agent skipped `create_sandbox` tool | Ensure tool order: create → install → start → test |
 | `Test runner did not produce a result file` | Playwright install failed in E2B VM | Check runner stdout/stderr in tool result; retry with longer timeout |
 | Port exposure failed | App didn't bind to expected port | Read `.sandbox/app.log` via `read_file` |
-| Every AI fix breaks something else | Patching symptoms, not architecture | Stop; read this doc; fix provider boundary first |
+| Every fix breaks something else | Incomplete migration | Read this doc; finish E2B setup before chasing individual errors |
 
 ---
 
