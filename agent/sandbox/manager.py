@@ -533,14 +533,22 @@ class SandboxManager:
             remote_path = f"{workdir}/{rel_path.lstrip('/')}"
             local_path = os.path.join(self.workspace_root, rel_path.lstrip("/"))
             try:
-                content = self.sandbox.files.read(remote_path)
-                if content is None:
-                    continue
-                self._write_sandbox_payload_to_host(
-                    content,
-                    local_path,
-                    binary=self._is_binary_workspace_path(rel_path),
-                )
+                if self._is_binary_workspace_path(rel_path):
+                    content = self.sandbox.files.read(remote_path, format="bytes")
+                    if content is None:
+                        continue
+                    os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+                    with open(local_path, "wb") as f:
+                        f.write(bytes(content))
+                else:
+                    content = self.sandbox.files.read(remote_path)
+                    if content is None:
+                        continue
+                    self._write_sandbox_payload_to_host(
+                        content,
+                        local_path,
+                        binary=False,
+                    )
                 synced.append(rel_path)
             except Exception:
                 pass

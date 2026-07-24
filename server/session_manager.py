@@ -17,6 +17,7 @@ yet). Fine for a single local developer; not for multi-user production.
 """
 
 import queue
+import textwrap
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,18 @@ from agent.controller import AgentController
 from providers.router import get_provider
 
 SESSIONS_ROOT = "./web_sessions"
+
+_DEMO_HTML = textwrap.dedent("""
+<!DOCTYPE html>
+<html>
+<head><title>CodePilot Test</title></head>
+<body>
+  <h1>CodePilot Test</h1>
+  <p id="status">Waiting...</p>
+  <button id="verifyBtn" onclick="document.getElementById('status').textContent='Success!'">Click Me</button>
+</body>
+</html>
+""").strip()
 
 
 @dataclass
@@ -66,6 +79,118 @@ class SessionManager:
         thread = threading.Thread(target=self._run_session, args=(session,), daemon=True)
         thread.start()
         return session_id
+
+    def create_demo_verification_session(self) -> str:
+        """
+        E2B-only browser verification demo — no AI provider key required.
+        Exercises sandbox create, app start, test flow, report, and evidence sync.
+        """
+        session_id = uuid.uuid4().hex[:12]
+        workspace_root = f"{SESSIONS_ROOT}/{session_id}"
+        session = Session(
+            id=session_id,
+            request="E2B screenshot demo (no AI)",
+            workspace_root=workspace_root,
+        )
+        with self._lock:
+            self._sessions[session_id] = session
+
+        thread = threading.Thread(
+            target=self._run_demo_verification,
+            args=(session,),
+            daemon=True,
+        )
+        thread.start()
+        return session_id
+
+    def _tool_event(self, name: str, tool_input: dict, result: dict) -> list[dict]:
+        return [
+            {"type": "tool_call", "name": name, "input": tool_input},
+            {"type": "tool_result", "name": name, "result": result},
+        ]
+
+    def _run_demo_verification(self, session: Session):
+        def on_event(event: dict):
+            self._emit(session, event)
+
+        def run_tool(name: str, tool_input: dict | None = None) -> dict:
+            tool_input = tool_input or {}
+            for event in self._tool_event(name, tool_input, {}):
+                if event["type"] == "tool_call":
+                    on_event(event)
+            result = executor.execute(name, tool_input)
+            on_event({"type": "tool_result", "name": name, "result": result})
+            return result
+
+        try:
+            config = load_config()
+            if not (config.e2b_api_key or "").strip():
+                raise RuntimeError("E2B_API_KEY is not set. Add it to .env — do not paste it in chat.")
+
+            workspace = Workspace(session.workspace_root)
+            sandbox = SandboxManager(workspace.root, config, progress_callback=on_event)
+            executor = ToolExecutor(workspace, sandbox, config.command_timeout_s)
+
+            create_result = run_tool("create_sandbox", {})
+            if not create_result.get("success"):
+                raise RuntimeError(create_result.get("error", "create_sandbox failed"))
+
+            file_result = run_tool(
+                "create_file",
+                {"path": "index.html", "content": _DEMO_HTML},
+            )
+            if not file_result.get("success", True):
+                raise RuntimeError(file_result.get("error", "create_file failed"))
+
+            start_result = run_tool(
+                "start_application",
+                {"command": "python3 -m http.server 3000", "port": 3000},
+            )
+            if not start_result.get("success"):
+                raise RuntimeError(start_result.get("error", "start_application failed"))
+
+            base_url = start_result.get("internal_url", "http://localhost:3000")
+            test_result = run_tool(
+                "run_test_flow",
+                {
+                    "base_url": base_url,
+                    "steps": [
+                        {"action": "navigate", "path": "/"},
+                        {"action": "assert_visible", "selector": "h1"},
+                        {"action": "assert_text", "selector": "h1", "expected": "CodePilot Test"},
+                        {"action": "click", "selector": "#verifyBtn"},
+                        {"action": "assert_text", "selector": "#status", "expected": "Success!"},
+                    ],
+                    "timeout": 180,
+                },
+            )
+            if not test_result.get("success"):
+                raise RuntimeError(test_result.get("error", "run_test_flow failed"))
+
+            report_result = run_tool(
+                "generate_verification_report",
+                {"summary": "E2B screenshot demo"},
+            )
+            if not report_result.get("success"):
+                raise RuntimeError(report_result.get("error", "generate_verification_report failed"))
+
+            run_tool("destroy_sandbox", {})
+
+            with self._lock:
+                session.status = "done"
+                session.result = report_result.get("overall_result", "PASS")
+            self._emit(session, {"type": "session_done", "result": session.result})
+
+        except Exception as e:
+            try:
+                if "sandbox" in locals() and sandbox.is_active and "executor" in locals():
+                    executor.execute("destroy_sandbox", {})
+            except Exception:
+                pass
+            with self._lock:
+                session.status = "error"
+                session.result = str(e)
+            self._emit(session, {"type": "session_error", "message": str(e)})
 
     def get_session(self, session_id: str) -> Optional[Session]:
         with self._lock:

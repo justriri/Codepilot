@@ -494,6 +494,10 @@
             API changes here, just a manual trigger for the exact same job the API accepts.
           </div>
           <button class="btn btn-primary" id="submit-job-btn" style="margin-top:14px;">Submit Job</button>
+          <button class="btn btn-ghost" id="demo-verification-btn" style="margin-top:14px; margin-left:8px;">Run E2B Demo (no AI key)</button>
+          <div class="jobs-notice" style="margin-top:10px;">
+            Demo uses only <code>E2B_API_KEY</code> from your local <code>.env</code> — never paste keys in chat.
+          </div>
         </div>
       </div>
     </div>
@@ -631,6 +635,25 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Submit Job';
+    }
+  });
+
+  document.getElementById('demo-verification-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('demo-verification-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting demo...';
+    try {
+      const res = await fetch('/api/demo/verification', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || ('HTTP ' + res.status));
+      const label = 'E2B screenshot demo (no AI)';
+      storeJob({ id: data.session_id, request: label, status: 'running', submittedAt: Date.now() });
+      openJobDetail(data.session_id, label);
+    } catch (err) {
+      alert('Demo failed to start: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Run E2B Demo (no AI key)';
     }
   });
 
