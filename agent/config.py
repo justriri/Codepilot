@@ -157,7 +157,7 @@ def load_config() -> AgentConfig:
             )
         ),
 
-        # auto | firefox | chromium | webkit
+        # auto | all | firefox | chromium | webkit
         browser_engine=os.environ.get(
             "BROWSER_ENGINE",
             "auto"

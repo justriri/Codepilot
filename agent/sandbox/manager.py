@@ -25,6 +25,7 @@ import time
 from e2b import Sandbox
 
 from agent.browser_engine import (
+    ALL_ENGINES,
     install_command,
     normalize_engine,
     probe_command,
@@ -65,6 +66,7 @@ class SandboxManager:
         self._playwright_ready = False
         self._runner_scripts_bundled = False
         self.browser_engine: str | None = None
+        self._ready_engines: list[str] = []
 
     @property
     def is_active(self) -> bool:
@@ -298,6 +300,7 @@ class SandboxManager:
         candidates = resolve_fallback_order(requested, has_opt_tools=has_opt)
         errors: list[str] = []
         python_bin = "/opt/agent-tools/venv/bin/python3" if has_opt else "python3"
+        working_engines: list[str] = []
 
         if not has_opt:
             try:
@@ -348,15 +351,42 @@ class SandboxManager:
                 )
                 continue
 
-            self.browser_engine = engine
+            working_engines.append(engine)
+            if requested != "all":
+                self.browser_engine = engine
+                self._playwright_ready = True
+                self._ready_engines = [engine]
+                self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", engine)
+                if self.workspace_root:
+                    local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    with open(local_path, "w", encoding="utf-8") as f:
+                        f.write(engine)
+                return {"success": True, "browser_engine": engine}
+
+        if requested == "all":
+            if not working_engines:
+                return {
+                    "success": False,
+                    "error": (
+                        "No working browser engine found for cross-browser mode. "
+                        "Details: " + " | ".join(errors)
+                    ),
+                }
+            self.browser_engine = "all"
             self._playwright_ready = True
-            self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", engine)
+            self._ready_engines = working_engines
+            self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", "all")
             if self.workspace_root:
                 local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 with open(local_path, "w", encoding="utf-8") as f:
-                    f.write(engine)
-            return {"success": True, "browser_engine": engine}
+                    f.write("all")
+            return {
+                "success": True,
+                "browser_engine": "all",
+                "ready_engines": working_engines,
+            }
 
         return {
             "success": False,
@@ -570,25 +600,72 @@ class SandboxManager:
     # Verification (Playwright test flow)
     # ------------------------------------------------------------------
 
-    def run_test_flow(self, base_url: str, steps: list, record_video: bool = False, timeout: int = 90) -> dict:
-        """
-        Drive the baked-in Playwright runner through an ordered sequence
-        of user-flow steps (navigate/click/fill/assert) against `base_url`
-        inside the sandbox.
+    def _aggregate_multi_browser_results(self, per_engine: dict[str, dict]) -> dict:
+        """Combine per-engine test results into one cross-browser verdict."""
+        all_steps: list[dict] = []
+        all_screenshots: list[str] = []
+        errors: list[str] = []
+        overall_success = True
+        videos: dict[str, str | None] = {}
 
-        The spec and result files are written/read using E2B's filesystem API
-        (self.sandbox.files.write / read), since there is no host bind-mount
-        in E2B cloud sandboxes.
+        for engine, result in per_engine.items():
+            if not result.get("success"):
+                overall_success = False
+            if result.get("error"):
+                errors.append(f"{engine}: {result['error']}")
+            for step in result.get("steps", []) or []:
+                tagged = dict(step)
+                tagged["browser_engine"] = engine
+                all_steps.append(tagged)
+            for shot in result.get("screenshots", []) or []:
+                all_screenshots.append(shot)
+            videos[engine] = result.get("video")
 
-        The result is cached on self.last_test_result so generate_report()
-        can compile it without the agent needing to repeat it.
-        """
+        passed = sum(1 for s in all_steps if s.get("passed"))
+        failed = sum(1 for s in all_steps if not s.get("passed"))
+        simple_lines = [
+            f"CROSS-BROWSER: {'PASS' if overall_success else 'FAIL'}",
+            f"Engines: {', '.join(per_engine.keys())}",
+            f"Steps: {passed} passed, {failed} failed",
+        ]
+        if errors:
+            simple_lines.append("Errors: " + " | ".join(errors))
+
+        return {
+            "success": overall_success,
+            "steps": all_steps,
+            "screenshots": all_screenshots,
+            "video": next((v for v in videos.values() if v), None),
+            "videos_by_engine": videos,
+            "multi_browser": per_engine,
+            "browser_engines": list(per_engine.keys()),
+            "error": " | ".join(errors) if errors else None,
+            "simple_report": {"text": "\n".join(simple_lines)},
+        }
+
+    def _run_single_test_flow(
+        self,
+        base_url: str,
+        steps: list,
+        record_video: bool,
+        timeout: int,
+        *,
+        engine: str | None = None,
+    ) -> dict:
+        """Run the Playwright test flow once for a specific browser engine."""
         self._require_active()
         self.sync_workspace()
         workdir = self.get_working_directory()
 
-        # Clear any stale result from a previous run inside the sandbox so a crash
-        # here can never be mistaken for a leftover pass from an earlier attempt.
+        if engine:
+            self.browser_engine = engine
+            self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", engine)
+            if self.workspace_root:
+                local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, "w", encoding="utf-8") as f:
+                    f.write(engine)
+
         self.exec_command(f"mkdir -p {workdir}/.sandbox && rm -f {workdir}/.sandbox/test_result.json")
 
         spec_content = json.dumps({"base_url": base_url, "steps": steps, "record_video": record_video})
@@ -635,7 +712,6 @@ class SandboxManager:
                 f"{workdir}/.sandbox/test_spec.json {workdir}/.sandbox/test_result.json"
             )
 
-        # Playwright is bootstrapped at sandbox create(); allow headroom for Firefox.
         exec_result = self.exec_command(command, timeout=max(timeout, 120))
         self.sync_from_sandbox([".sandbox/app.log", ".sandbox/test_result.json", ".sandbox/test_spec.json"])
 
@@ -655,6 +731,42 @@ class SandboxManager:
                 "runner_stderr": exec_result.get("stderr", ""),
             }
 
+        if engine:
+            test_result["browser_engine"] = engine
+        return test_result
+
+    def run_test_flow(self, base_url: str, steps: list, record_video: bool = False, timeout: int = 90) -> dict:
+        """
+        Drive the baked-in Playwright runner through an ordered sequence
+        of user-flow steps (navigate/click/fill/assert) against `base_url`
+        inside the sandbox.
+
+        When BROWSER_ENGINE=all, runs the flow once per available engine
+        and aggregates results into a single cross-browser verdict.
+        """
+        try:
+            requested = normalize_engine(getattr(self.config, "browser_engine", "auto"))
+        except ValueError as e:
+            return {
+                "success": False,
+                "steps": [],
+                "screenshots": [],
+                "video": None,
+                "error": str(e),
+            }
+
+        if requested == "all":
+            engines = self._ready_engines or list(ALL_ENGINES)
+            per_engine: dict[str, dict] = {}
+            for engine in engines:
+                per_engine[engine] = self._run_single_test_flow(
+                    base_url, steps, record_video, timeout, engine=engine
+                )
+            combined = self._aggregate_multi_browser_results(per_engine)
+            self.last_test_result = combined
+            return combined
+
+        test_result = self._run_single_test_flow(base_url, steps, record_video, timeout)
         self.last_test_result = test_result
         return test_result
 

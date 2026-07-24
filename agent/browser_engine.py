@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 
-VALID_ENGINES = frozenset({"firefox", "chromium", "webkit", "auto"})
+VALID_ENGINES = frozenset({"firefox", "chromium", "webkit", "auto", "all"})
+ALL_ENGINES = ("chromium", "firefox", "webkit")
 FALLBACK_ORDER_E2B = ("firefox", "chromium", "webkit")
 FALLBACK_ORDER_OPT = ("chromium", "firefox", "webkit")
 
@@ -31,7 +32,11 @@ def resolve_fallback_order(requested: str, *, has_opt_tools: bool) -> list[str]:
     auto:
       - Custom/Docker template (/opt/agent-tools): chromium first
       - Default E2B VM: firefox first (chromium headless_shell is unreliable)
+    all:
+      - Run verification against every engine (chromium, firefox, webkit)
     """
+    if requested == "all":
+        return list(ALL_ENGINES)
     if requested != "auto":
         return [requested]
 
@@ -75,6 +80,6 @@ def read_engine_from_workspace(workspace_root: str) -> str | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             value = f.read().strip().lower()
-        return value if value in VALID_ENGINES - {"auto"} else None
+        return value if value in VALID_ENGINES - {"auto", "all"} else None
     except OSError:
         return None
