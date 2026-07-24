@@ -54,6 +54,16 @@ class NewSessionRequest(BaseModel):
     request: str
 
 
+@app.post("/api/demo/verification")
+def demo_verification():
+    """
+    Run E2B browser verification without an AI key — for local UI demos.
+    Requires E2B_API_KEY in .env only.
+    """
+    session_id = manager.create_demo_verification_session()
+    return {"session_id": session_id, "note": "E2B-only demo — watch Evidence card for screenshots."}
+
+
 @app.post("/api/sessions")
 def create_session(payload: NewSessionRequest):
     if not payload.request or not payload.request.strip():
