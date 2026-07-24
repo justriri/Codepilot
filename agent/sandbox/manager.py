@@ -39,9 +39,10 @@ class SandboxError(Exception):
 
 
 class SandboxManager:
-    def __init__(self, workspace_root: str, config):
+    def __init__(self, workspace_root: str, config, progress_callback=None):
         self.workspace_root = workspace_root
         self.config = config
+        self._progress_callback = progress_callback
 
         # Deliberately NOT connecting to E2B here. If the API key isn't
         # configured or valid, we want that to surface as a clean {"success": False}
@@ -283,6 +284,21 @@ class SandboxManager:
         except Exception:
             return False
 
+    def _emit_progress(self, stage: str, message: str, engine: str | None = None) -> None:
+        if not self._progress_callback:
+            return
+        payload = {
+            "type": "bootstrap_progress",
+            "stage": stage,
+            "message": message,
+        }
+        if engine:
+            payload["engine"] = engine
+        try:
+            self._progress_callback(payload)
+        except Exception:
+            pass
+
     def _bootstrap_browser_engine(self) -> dict:
         """Install Playwright and select a working browser engine."""
         if self._playwright_ready and self.browser_engine:
@@ -302,7 +318,12 @@ class SandboxManager:
         python_bin = "/opt/agent-tools/venv/bin/python3" if has_opt else "python3"
         working_engines: list[str] = []
 
+        self._emit_progress("start", "Preparing browser verification…")
+        if has_opt:
+            self._emit_progress("template", "Using pre-built verification template")
+
         if not has_opt:
+            self._emit_progress("pip", "Installing Playwright…")
             try:
                 pip = self.sandbox.commands.run(
                     "python3 -m pip install -q playwright",
@@ -319,6 +340,7 @@ class SandboxManager:
 
         for engine in candidates:
             if not has_opt:
+                self._emit_progress("install", f"Installing {engine}…", engine=engine)
                 try:
                     install = self.sandbox.commands.run(
                         install_command(engine),
@@ -335,6 +357,7 @@ class SandboxManager:
                     )
                     continue
 
+            self._emit_progress("probe", f"Testing {engine}…", engine=engine)
             try:
                 probe = self.sandbox.commands.run(
                     probe_command(engine, python_bin=python_bin),
@@ -356,6 +379,7 @@ class SandboxManager:
                 self.browser_engine = engine
                 self._playwright_ready = True
                 self._ready_engines = [engine]
+                self._emit_progress("ready", f"Ready — using {engine}", engine=engine)
                 self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", engine)
                 if self.workspace_root:
                     local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
@@ -376,6 +400,10 @@ class SandboxManager:
             self.browser_engine = "all"
             self._playwright_ready = True
             self._ready_engines = working_engines
+            self._emit_progress(
+                "ready",
+                f"Ready — cross-browser ({', '.join(working_engines)})",
+            )
             self.sandbox.files.write(f"{workdir}/.sandbox/browser_engine", "all")
             if self.workspace_root:
                 local_path = os.path.join(self.workspace_root, ".sandbox", "browser_engine")
