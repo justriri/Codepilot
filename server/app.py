@@ -39,6 +39,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from payments.config import load_x402_config
+from payments.x402_middleware import install_x402_middleware
 from server.session_manager import SessionManager
 from server import agent_interface, ide_mode
 
@@ -46,6 +48,11 @@ app = FastAPI(title="AI Coding Agent Console")
 manager = SessionManager()
 app.include_router(agent_interface.router)
 app.include_router(ide_mode.router)
+
+# Gates POST /api/agent-interface/* behind an x402 payment challenge.
+# No-op (routes behave exactly as before) unless the full payment
+# configuration validates — see payments/validation.py.
+install_x402_middleware(app, load_x402_config())
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
