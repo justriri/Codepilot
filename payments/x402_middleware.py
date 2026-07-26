@@ -3,9 +3,12 @@ x402 payment middleware wiring for the CodePilot verification API.
 
 Gates every POST under /api/agent-interface/* (the paid A2MCP
 verification surface registered on OKX AI) behind an x402 'exact'
-payment challenge on X Layer, using the official x402 Python SDK
-(https://github.com/coinbase/x402). Nothing here is hardcoded — every
-network/token/price/facilitator value comes from payments/config.py.
+payment challenge on X Layer, settled through OKX's own authenticated
+facilitator (x402.http.OKXFacilitatorClient, from the official
+`okxweb3-app-x402` package — see docs/X402_PAYMENTS.md for why this
+replaced the generic unauthenticated HTTPFacilitatorClient). Nothing
+here is hardcoded — every network/token/price/credential value comes
+from payments/config.py.
 
 This module only adds the payment gate. The verification pipeline
 itself (agent/, server/agent_interface.py) is completely unchanged:
@@ -40,13 +43,23 @@ def install_x402_middleware(app: FastAPI, config: X402Config) -> bool:
     # package unless the payment layer is actually being installed
     # (e.g. local dev with X402_ENABLED=false doesn't need it present).
     from x402 import x402ResourceServer
-    from x402.http import HTTPFacilitatorClient
+    from x402.http import OKXAuthConfig, OKXFacilitatorClient, OKXFacilitatorConfig
     from x402.http.middleware.fastapi import PaymentMiddlewareASGI
     from x402.mechanisms.evm.exact import ExactEvmServerScheme
 
     network = f"eip155:{config.chain_id}"
 
-    facilitator = HTTPFacilitatorClient(config={"url": config.facilitator_url})
+    facilitator = OKXFacilitatorClient(
+        OKXFacilitatorConfig(
+            auth=OKXAuthConfig(
+                api_key=config.okx_api_key,
+                secret_key=config.okx_secret_key,
+                passphrase=config.okx_passphrase,
+            ),
+            base_url=config.okx_base_url,
+            sync_settle=config.okx_sync_settle,
+        )
+    )
     server = x402ResourceServer(facilitator)
     server.register(network, ExactEvmServerScheme())
 
@@ -73,11 +86,13 @@ def install_x402_middleware(app: FastAPI, config: X402Config) -> bool:
     app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
 
     logger.info(
-        "x402 payment layer ENABLED — %s %s per call on %s (asset %s), paid to %s",
+        "x402 payment layer ENABLED — %s %s per call on %s (asset %s), paid to %s, "
+        "settled via OKX facilitator at %s",
         config.price,
         config.token_symbol,
         network,
         config.token_address,
         config.pay_to_address,
+        config.okx_base_url,
     )
     return True
