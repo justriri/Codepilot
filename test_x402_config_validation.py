@@ -19,7 +19,11 @@ def _complete_config(**overrides) -> X402Config:
     base = dict(
         enabled=True,
         chain_id=196,
-        facilitator_url="https://example-facilitator.test",
+        okx_base_url="https://web3.okx.com",
+        okx_api_key="test-api-key",
+        okx_secret_key="test-secret-key",
+        okx_passphrase="test-passphrase",
+        okx_sync_settle=True,
         token_address=VALID_ADDRESS_A,
         token_decimals=6,
         token_symbol="USD₮0",
@@ -65,14 +69,24 @@ def test_complete_config_has_no_errors():
     assert validate_x402_config(_complete_config()) == []
 
 
-def test_missing_facilitator_url_is_flagged():
-    errors = validate_x402_config(_complete_config(facilitator_url=None))
-    assert any("X402_FACILITATOR_URL" in e for e in errors)
+def test_non_http_okx_base_url_is_flagged():
+    errors = validate_x402_config(_complete_config(okx_base_url="ftp://bad"))
+    assert any("OKX_BASE_URL" in e for e in errors)
 
 
-def test_non_http_facilitator_url_is_flagged():
-    errors = validate_x402_config(_complete_config(facilitator_url="ftp://bad"))
-    assert any("X402_FACILITATOR_URL" in e for e in errors)
+def test_missing_okx_api_key_is_flagged():
+    errors = validate_x402_config(_complete_config(okx_api_key=None))
+    assert any("OKX_API_KEY" in e for e in errors)
+
+
+def test_missing_okx_secret_key_is_flagged():
+    errors = validate_x402_config(_complete_config(okx_secret_key=None))
+    assert any("OKX_SECRET_KEY" in e for e in errors)
+
+
+def test_missing_okx_passphrase_is_flagged():
+    errors = validate_x402_config(_complete_config(okx_passphrase=None))
+    assert any("OKX_PASSPHRASE" in e for e in errors)
 
 
 def test_missing_chain_id_is_flagged():
@@ -112,7 +126,7 @@ def test_invalid_price_is_flagged():
 
 def test_multiple_missing_fields_all_reported():
     errors = validate_x402_config(
-        _complete_config(facilitator_url=None, chain_id=None, token_address=None)
+        _complete_config(okx_api_key=None, chain_id=None, token_address=None)
     )
     assert len(errors) >= 3
 
@@ -123,14 +137,14 @@ def test_multiple_missing_fields_all_reported():
 def test_disabled_flag_short_circuits_validation():
     # enabled=False with an otherwise-broken config should NOT report
     # errors — the feature is off, not misconfigured.
-    config = _complete_config(enabled=False, facilitator_url=None)
+    config = _complete_config(enabled=False, okx_api_key=None)
     is_enabled, errors = resolve_x402_enabled(config)
     assert is_enabled is False
     assert errors == []
 
 
 def test_incomplete_config_auto_disables():
-    config = _complete_config(facilitator_url=None)
+    config = _complete_config(okx_api_key=None)
     is_enabled, errors = resolve_x402_enabled(config)
     assert is_enabled is False
     assert len(errors) == 1

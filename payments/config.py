@@ -4,8 +4,12 @@ x402 payment configuration.
 Every payment-related value is environment-driven — nothing here is
 hardcoded. See .env.example for the full variable list and
 docs/X402_PAYMENTS.md for where each value comes from (the official
-OKX X Layer token list, X Layer chain docs, etc.) and why the
-facilitator URL has no default.
+OKX X Layer token list, OKX's own x402 dev docs, etc.).
+
+Settlement goes through OKX's own authenticated facilitator
+(x402.http.OKXFacilitatorClient, from the official `okxweb3-app-x402`
+package) rather than a generic unauthenticated one — see
+docs/X402_PAYMENTS.md for why.
 """
 
 import os
@@ -24,7 +28,14 @@ class X402Config:
     enabled: bool
 
     chain_id: Optional[int]
-    facilitator_url: Optional[str]
+
+    # OKX's own authenticated facilitator (see OKXAuthConfig/OKXFacilitatorConfig
+    # in x402.http). base_url matches the SDK's own documented default.
+    okx_base_url: str
+    okx_api_key: Optional[str]
+    okx_secret_key: Optional[str]
+    okx_passphrase: Optional[str]
+    okx_sync_settle: bool
 
     token_address: Optional[str]
     token_decimals: Optional[int]
@@ -63,7 +74,13 @@ def load_x402_config() -> X402Config:
         enabled=os.environ.get("X402_ENABLED", "true").strip().lower()
         not in ("0", "false", "no"),
         chain_id=_int_or_none(os.environ.get("X402_CHAIN_ID")),
-        facilitator_url=_str_or_none(os.environ.get("X402_FACILITATOR_URL")),
+        okx_base_url=os.environ.get("OKX_BASE_URL", "https://web3.okx.com").strip()
+        or "https://web3.okx.com",
+        okx_api_key=_str_or_none(os.environ.get("OKX_API_KEY")),
+        okx_secret_key=_str_or_none(os.environ.get("OKX_SECRET_KEY")),
+        okx_passphrase=_str_or_none(os.environ.get("OKX_PASSPHRASE")),
+        okx_sync_settle=os.environ.get("OKX_SYNC_SETTLE", "true").strip().lower()
+        not in ("0", "false", "no"),
         token_address=_str_or_none(os.environ.get("X402_TOKEN_ADDRESS")),
         token_decimals=_int_or_none(os.environ.get("X402_TOKEN_DECIMALS")),
         token_symbol=os.environ.get("X402_TOKEN_SYMBOL", "USD₮0"),

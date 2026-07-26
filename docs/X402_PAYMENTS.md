@@ -11,20 +11,63 @@ Every `POST /api/agent-interface/*` route (`analyze`, `explain`,
 `suggest-fix`, `rewrite`, `verify`, `full`, `execute`, `generate-tests`,
 `run-tests` — see `server/agent_interface.py`) is gated behind an
 [x402](https://github.com/coinbase/x402) `exact`-scheme payment
-challenge on X Layer:
+challenge on X Layer, settled through **OKX's own authenticated
+facilitator**:
 
 - **No/invalid payment** → the request never reaches CodePilot's
-  verification pipeline. The official x402 SDK returns the spec's
+  verification pipeline. The x402 SDK returns the spec's
   `402 Payment Required` response with the payment challenge (network,
   token, amount, recipient) instead.
-- **Valid payment** (verified + settled through the configured
-  facilitator) → the request flows into the existing handler exactly as
-  before. Nothing in `agent/`, `server/agent_interface.py`, or the
+- **Valid payment** (verified + settled through OKX's facilitator) →
+  the request flows into the existing handler exactly as before.
+  Nothing in `agent/`, `server/agent_interface.py`, or the
   browser/sandbox/repair-loop pipeline was changed.
 
 Every other route (`/api/sessions/*`, `/api/demo/verification`, the IDE
 mode routes, the static frontend) is **not** gated — this only protects
 the standalone Agent Interface API that's the paid marketplace surface.
+
+## Which facilitator, and why
+
+The payment layer settles through **OKX's own facilitator**
+(`x402.http.OKXFacilitatorClient`, from the official `okxweb3-app-x402`
+package — <https://web3.okx.com/build/dev-docs/payments/methods-onetime>),
+not a generic third-party one. This is a correction from an earlier
+version of this file, which used the generic, unauthenticated
+`x402.http.HTTPFacilitatorClient` because — at the time — OKX's own dev
+docs (`web3.okx.com`) were unreachable from the environment doing the
+research, and the community `x402.org` facilitator directory doesn't
+list X Layer or OKX at all. Once `web3.okx.com` became reachable, its
+own docs confirmed:
+
+- X Layer (`eip155:196`) is OKX's **primary supported network** for
+  x402, with **USD₮0 / USDG as the default `exact`-scheme stablecoins**
+  — this matches the token this deployment already uses.
+- OKX ships an official Python package, **`okxweb3-app-x402`**, adding
+  `OKXFacilitatorClient` / `OKXFacilitatorConfig` / `OKXAuthConfig` to
+  the same `x402.http` import path.
+- Authentication is OKX's standard HMAC-SHA256 API scheme —
+  `OK-ACCESS-KEY` / `OK-ACCESS-SIGN` / `OK-ACCESS-TIMESTAMP` /
+  `OK-ACCESS-PASSPHRASE` headers, computed from `OKX_API_KEY` /
+  `OKX_SECRET_KEY` / `OKX_PASSPHRASE` — the same trio pattern used
+  across OKX's exchange/wallet APIs generally.
+- `base_url` defaults to `https://web3.okx.com`, calling
+  `/api/v6/pay/x402/{supported,verify,settle}` underneath.
+
+### ⚠️ Package collision: install `okxweb3-app-x402` only
+
+`okxweb3-app-x402` is a **full fork** of the `x402` package, not an
+add-on — it installs its own `x402/*.py` file tree under the same
+`x402` import path as the plain community `x402` PyPI package. If both
+are ever installed in the same environment, whichever installs *second*
+silently overwrites the other's files on disk (pip's own metadata
+doesn't notice the collision), which can quietly drop
+`OKXFacilitatorClient` with no error. **Never add a bare `x402` line to
+requirements.txt alongside `okxweb3-app-x402`.** This was verified
+directly: uninstalling both and installing only `okxweb3-app-x402`
+still exposes the full SDK surface (`x402ResourceServer`,
+`ExactEvmServerScheme`, `PaymentMiddlewareASGI`, plus the OKX classes) —
+see `payments/x402_middleware.py`'s imports.
 
 ## Architecture
 
@@ -32,24 +75,30 @@ the standalone Agent Interface API that's the paid marketplace surface.
 payments/
   config.py       # X402Config dataclass, loaded entirely from env vars
   validation.py   # startup validation — decides whether to enable
-  x402_middleware.py  # wires the official x402 SDK into the FastAPI app
+  x402_middleware.py  # wires the OKX-authenticated x402 SDK into the app
 
-test_x402_config_validation.py  # 18 unit tests, no network/SDK needed
+test_x402_config_validation.py  # 20 unit tests, no network/SDK needed
 test_x402_payment_gate.py       # 5 integration tests against the real
-                                 # installed x402 SDK + a local mock
-                                 # facilitator (see its module docstring)
+                                 # installed okxweb3-app-x402 SDK + a
+                                 # local mock OKX-shaped facilitator
+                                 # (see its module docstring) — including
+                                 # an independent recomputation of
+                                 # OK-ACCESS-SIGN to prove auth actually
+                                 # wires through correctly, not just that
+                                 # the mock is reachable.
 ```
 
-All 23 tests pass as of this writing, run against the real `x402` PyPI
-package (not mocked) — see "Local testing" below.
+All 25 tests pass as of this writing, run against the real
+`okxweb3-app-x402` PyPI package (not mocked) — see "Local testing" below.
 
 `server/app.py` calls `install_x402_middleware(app, load_x402_config())`
 once at import time. That function:
 
 1. Loads config from environment variables (`payments/config.py`).
-2. Validates it (`payments/validation.py`) — chain ID set, facilitator
-   URL set and well-formed, token/receiver addresses are valid EVM
-   addresses, decimals/price/EIP-712 name present.
+2. Validates it (`payments/validation.py`) — chain ID set, `OKX_BASE_URL`
+   well-formed, `OKX_API_KEY`/`OKX_SECRET_KEY`/`OKX_PASSPHRASE` present,
+   token/receiver addresses are valid EVM addresses, decimals/price/
+   EIP-712 name present.
 3. If anything is missing or invalid, **logs a warning and returns
    without installing the middleware** — the API comes up and serves
    `/api/agent-interface/*` without a payment gate, rather than
@@ -57,36 +106,39 @@ once at import time. That function:
    misconfigured payment gate blocking 100% of paid traffic is worse
    than temporarily unmetered access, and it fails loudly (the warning
    names every missing field) rather than silently.
-4. Only if validation passes does it construct the `x402ResourceServer`,
-   register the EVM `exact` scheme, and attach
-   `PaymentMiddlewareASGI` to the app.
+4. Only if validation passes does it construct an `OKXFacilitatorClient`,
+   register it with `x402ResourceServer`, register the EVM `exact`
+   scheme, and attach `PaymentMiddlewareASGI` to the app.
 
 ## Operational note: facilitator downtime
 
 The x402 SDK's FastAPI middleware initializes its facilitator connection
 lazily, on the first protected request per process (it calls the
 facilitator's `GET /supported` once, then caches that it's done so).
-Confirmed directly (see the `ConnectError` case while building
-`test_x402_payment_gate.py`): if the facilitator is unreachable at that
-moment, the SDK does **not** catch the resulting network error — the
-request fails with an unhandled exception (a generic 500), not a clean
-402/503, and initialization is retried on the *next* request rather than
-crash-looping. This is upstream SDK behavior, not something this change
-patches (that would be an unrelated-code refactor) — just be aware that
-a facilitator outage surfaces as 500s on the paid API, not a graceful
-degradation, until it recovers. Monitor the configured facilitator's
-uptime accordingly.
+Confirmed directly against the real SDK: if the facilitator is
+unreachable at that moment, the SDK does **not** catch the resulting
+network error — the request fails with an unhandled exception (a
+generic 500), not a clean 402/503, and initialization is retried on the
+*next* request rather than crash-looping. This is upstream SDK
+behavior, not something this change patches (that would be an
+unrelated-code refactor) — just be aware that an OKX facilitator outage
+surfaces as 500s on the paid API, not a graceful degradation, until it
+recovers.
 
 ## Environment variables
 
-All required, no code changes needed to reconfigure. See `.env.example`
-for the annotated version.
+All required (except where noted), no code changes needed to
+reconfigure. See `.env.example` for the annotated version.
 
 | Variable | Meaning | This deployment's value |
 |---|---|---|
 | `X402_ENABLED` | Master on/off switch. | `true` (set `false` for local dev without payments) |
 | `X402_CHAIN_ID` | Settlement chain (CAIP-2 `eip155:<id>`). | `196` (X Layer) |
-| `X402_FACILITATOR_URL` | Facilitator that verifies + settles payments. **No default — see below.** | *(you must set this)* |
+| `OKX_BASE_URL` | OKX facilitator base URL. Has a default. | `https://web3.okx.com` (SDK's own documented default) |
+| `OKX_API_KEY` | OKX API key for facilitator auth. **No default — see below.** | *(you must set this)* |
+| `OKX_SECRET_KEY` | OKX API secret. **No default — see below.** | *(you must set this)* |
+| `OKX_PASSPHRASE` | OKX API passphrase. **No default — see below.** | *(you must set this)* |
+| `OKX_SYNC_SETTLE` | Wait for on-chain confirmation (`true`) vs. respond on submit (`false`). | `true` |
 | `X402_TOKEN_ADDRESS` | ERC-20 contract for the settlement token. | `0x779Ded0c9e1022225f8E0630b35a9b54bE713736` (USD₮0, from OKX's official [xlayer-tokenlist](https://github.com/okx/xlayer-tokenlist)) |
 | `X402_TOKEN_DECIMALS` | Token decimals. | `6` |
 | `X402_TOKEN_SYMBOL` | Display symbol only (not sent on-chain). | `USD₮0` |
@@ -96,37 +148,40 @@ for the annotated version.
 | `X402_PAY_TO_ADDRESS` | Where payment settles. | `0xff67a208df0dd71fea796af3a334b14fa687fc3a` (CodePilot's ASP wallet) |
 | `X402_MAX_TIMEOUT_SECONDS` | How long a signed authorization stays valid. | `300` |
 
-### Why `X402_FACILITATOR_URL` has no default
+### How to get `OKX_API_KEY` / `OKX_SECRET_KEY` / `OKX_PASSPHRASE`
 
-As of this writing, **x402.org's official facilitator directory does
-not list X Layer or OKX** (checked at `docs.x402.org/dev-tools/facilitators`).
-X Layer's official account has publicly acknowledged a third-party
-permissionless facilitator (referred to online as "openx402") adding
-X Layer + OKX Wallet support, but there is no stable documentation page
-or citable endpoint URL for it — only a social-media mention — so it is
-**not** hardcoded here. Before enabling payments in production:
+These are account-specific credentials — I can't generate them for you.
+Go to the **OKX Web3 Developer Portal**
+(<https://web3.okx.com/onchainos/dev-portal>), connect and verify the
+wallet you want to manage the API key with, and generate the key/secret/
+passphrase trio there. (The portal's key-generation UI itself wasn't
+visible in what I could fetch of its docs — if the flow past "connect +
+verify" isn't self-explanatory, that's worth a support ticket to OKX.)
 
-1. Verify a facilitator that actually supports `eip155:196` + the
-   USD₮0 contract above (test its `/verify` and `/settle` endpoints
-   directly, or via a real `onchainos payment quote`/`pay` round-trip).
-2. Set `X402_FACILITATOR_URL` to it.
-3. Coinbase's public facilitator (`https://x402.org/facilitator`) is
-   the documented default for the SDK's own examples, but is
-   documented as serving Base/Base Sepolia — do not assume it settles
-   X Layer without testing first.
+### Why `X402_TOKEN_EIP712_NAME` still has no default
 
-### Why `X402_TOKEN_EIP712_NAME` has no default
+OKX's docs confirm USD₮0 is the right *token*, but don't publish its
+EIP-712 domain name/version. I queried the deployed contract
+(`0x779Ded0c9e1022225f8E0630b35a9b54bE713736`) directly on-chain via two
+independent public X Layer RPCs (`rpc.xlayer.tech`, `xlayer.drpc.org`):
+`name()` returns `"USD₮0"` on both (strong, cross-verified evidence),
+but the contract does **not** implement EIP-5267 (`eip712Domain()`
+reverts) and has no public `version()` getter, so there's no on-chain
+declaration proving that string is *also* the signing domain name (vs.
+just the display name) — using `name()` as the domain name is the
+near-universal pattern for EIP-3009 tokens, but isn't proven here. Set
+it explicitly once you've confirmed it (e.g. via a test payment) rather
+than trusting a hardcoded default.
 
-The `exact` scheme signs an EIP-3009 `transferWithAuthorization`
-message, which is bound to the token contract's own EIP-712 domain
-`name` (and `version`). Using the wrong domain name makes every
-signature invalid against the real contract — this can't be safely
-guessed. Read it directly from the contract before deploying:
-
-- On [OKLink's X Layer explorer](https://www.oklink.com/x-layer), open
-  the USD₮0 contract → "Contract" → "Read Contract" → call `name()`
-  (and `EIP712_DOMAIN()` / `version()` if exposed) and use the exact
-  returned string.
+**Separately, a real compatibility risk worth flagging**: USDT0's own
+official docs (`docs.usdt0.to/technical-documentation/developer/`)
+show `transferWithAuthorization` taking a single packed `bytes
+signature` parameter, not the split `(v, r, s)` of vanilla EIP-3009.
+If accurate, this is OKX's/the facilitator's concern (settlement
+happens there, not in this codebase), but it means "supports EIP-3009"
+isn't sufficient assurance — a real end-to-end test payment (see the
+production checklist) is the only way to be sure USD₮0 settles
+correctly through OKX's facilitator.
 
 ## Local testing
 
@@ -136,7 +191,8 @@ pip install -r requirements.txt
 # 1. Config validation (no external services required):
 pytest test_x402_config_validation.py -v
 
-# 2. Payment-gate integration test (mock facilitator, no real funds):
+# 2. Payment-gate integration test (local mock OKX-shaped facilitator,
+#    no real credentials or funds — includes an OK-ACCESS-SIGN check):
 pytest test_x402_payment_gate.py -v
 
 # 3. Run the server with the payment layer OFF (fastest local loop):
@@ -145,13 +201,13 @@ curl -X POST localhost:8000/api/agent-interface/analyze -d '{"code":"x=1"}'
 # -> normal response, no payment gate involved.
 
 # 4. Run it with the payment layer ON but genuinely unconfigured
-#    (FACILITATOR_URL / TOKEN_EIP712_NAME blank in .env):
+#    (OKX_API_KEY / TOKEN_EIP712_NAME blank in .env):
 uvicorn server.app:app --reload
 # -> startup log shows "x402 payment layer DISABLED — invalid/incomplete
 #    configuration" listing exactly what's missing; the endpoint still
 #    answers normally (auto-disable, not a crash).
 
-# 5. Once FACILITATOR_URL + TOKEN_EIP712_NAME are filled in and verified:
+# 5. Once OKX_API_KEY/SECRET/PASSPHRASE + TOKEN_EIP712_NAME are filled in:
 uvicorn server.app:app --reload
 curl -i -X POST localhost:8000/api/agent-interface/analyze -d '{"code":"x=1"}'
 # -> HTTP 402 with an EMPTY body and a `payment-required` response
@@ -166,19 +222,50 @@ Confirmed directly against the installed SDK (see `test_x402_payment_gate.py`) �
 
 1. Add the new environment variables from the table above to the
    Railway service (Project → Variables) — same place `DEEPSEEK_API_KEY`
-   / `E2B_API_KEY` etc. already live. Leave `X402_FACILITATOR_URL` and
-   `X402_TOKEN_EIP712_NAME` unset until you've verified them (per above)
-   — the app will boot fine either way, just without the payment gate.
+   / `E2B_API_KEY` etc. already live:
+   - `X402_ENABLED=true`
+   - `X402_CHAIN_ID=196`
+   - `OKX_BASE_URL=https://web3.okx.com`
+   - `OKX_API_KEY`, `OKX_SECRET_KEY`, `OKX_PASSPHRASE` — from the OKX
+     Developer Portal (see above)
+   - `OKX_SYNC_SETTLE=true`
+   - `X402_TOKEN_ADDRESS=0x779Ded0c9e1022225f8E0630b35a9b54bE713736`
+   - `X402_TOKEN_DECIMALS=6`
+   - `X402_TOKEN_SYMBOL=USD₮0`
+   - `X402_TOKEN_EIP712_NAME` — verify before setting (see above)
+   - `X402_TOKEN_EIP712_VERSION=2`
+   - `X402_PRICE=0.10`
+   - `X402_PAY_TO_ADDRESS=0xff67a208df0dd71fea796af3a334b14fa687fc3a`
+   - `X402_MAX_TIMEOUT_SECONDS=300`
+
+   Leave `OKX_API_KEY`/`SECRET`/`PASSPHRASE` and `X402_TOKEN_EIP712_NAME`
+   unset until verified — the app boots fine either way, just without
+   the payment gate.
 2. No changes to `procfile` are needed — it already runs
    `uvicorn server.app:app --host 0.0.0.0 --port $PORT`, and
-   `requirements.txt` now includes `x402[fastapi,httpx,evm]`, so a
-   normal Railway redeploy picks it up.
+   `requirements.txt` now includes `okxweb3-app-x402[fastapi,httpx,evm]`
+   (not the plain `x402` package — see the collision warning above), so
+   a normal Railway redeploy picks it up.
 3. After deploying, check the Railway logs for the `payments.x402`
    logger line on startup — it tells you definitively whether the
-   payment gate is enabled or disabled (and why).
+   payment gate is enabled or disabled (and why), and which facilitator
+   base URL it's using.
 4. Confirm `https://codepilot.up.railway.app/api/agent-interface/analyze`
    (the endpoint registered on OKX AI) returns `402` for an unpaid
    `POST` once the gate is enabled — see the production checklist below.
+
+## A2MCP marketplace compatibility
+
+This deployment's `accepts[]` entry (`scheme: "exact"`, `network:
+"eip155:196"`, asset `USD₮0`, `payTo` = CodePilot's registered ASP
+wallet address) matches exactly what CodePilot's OKX AI listing already
+declares (0.10 USDT per verification request, X Layer). Routing
+settlement through OKX's own facilitator — rather than a third-party
+one whose X Layer/USD₮0 support was never confirmed — is the change
+most directly relevant to marketplace compatibility: it's the
+facilitator OKX's own docs point sellers at for this exact network/token
+combination. The one open item is the `X402_TOKEN_EIP712_NAME` value
+(see above) — everything else lines up with the registered listing.
 
 ## Production testing checklist
 
@@ -198,7 +285,8 @@ Confirmed directly against the installed SDK (see `test_x402_payment_gate.py`) �
       then confirm and `onchainos payment pay --payment-id <id> --selected-index <n> --yes`
       — expect `status: "success"` with a real `txHash`, and the
       replayed request returns CodePilot's normal `analyze` response
-      body (not a 402).
+      body (not a 402). This is also the real-world test of the
+      USDT0 signature-shape question above — if it settles, it settles.
 - [ ] **Existing functionality unaffected**: with the same paid
       request's response, verify the JSON shape matches what
       `/api/agent-interface/analyze` returned before this change

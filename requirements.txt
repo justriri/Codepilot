@@ -5,4 +5,9 @@ e2b>=1.0.0
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 playwright>=1.40.0
-x402[fastapi,httpx,evm]>=2.16.0
+# Official OKX x402 SDK — installs its own x402/* package tree (it's a
+# full fork, not an add-on). Do NOT also install the plain `x402`
+# package: both claim the same `x402` import path, and whichever
+# installs second silently overwrites the other's files on disk,
+# which would quietly drop OKXFacilitatorClient. See docs/X402_PAYMENTS.md.
+okxweb3-app-x402[fastapi,httpx,evm]>=0.1.1

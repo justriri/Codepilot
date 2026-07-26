@@ -27,20 +27,22 @@ def validate_x402_config(config: X402Config) -> List[str]:
     """
     errors: List[str] = []
 
-    if not config.facilitator_url:
+    if not (config.okx_base_url.startswith("http://") or config.okx_base_url.startswith("https://")):
+        errors.append(f"OKX_BASE_URL is not a valid http(s) URL: {config.okx_base_url!r}")
+
+    if not config.okx_api_key:
         errors.append(
-            "X402_FACILITATOR_URL is not set. No official x402 facilitator "
-            "for X Layer is documented as of this writing — this must be "
-            "supplied explicitly once you've verified one (see "
-            "docs/X402_PAYMENTS.md); it intentionally has no default."
+            "OKX_API_KEY is not set. Generate it (with OKX_SECRET_KEY and "
+            "OKX_PASSPHRASE) via the OKX Web3 Developer Portal "
+            "(https://web3.okx.com/onchainos/dev-portal) by connecting and "
+            "verifying your wallet — see docs/X402_PAYMENTS.md."
         )
-    elif not (
-        config.facilitator_url.startswith("http://")
-        or config.facilitator_url.startswith("https://")
-    ):
-        errors.append(
-            f"X402_FACILITATOR_URL is not a valid http(s) URL: {config.facilitator_url!r}"
-        )
+
+    if not config.okx_secret_key:
+        errors.append("OKX_SECRET_KEY is not set (see OKX_API_KEY above).")
+
+    if not config.okx_passphrase:
+        errors.append("OKX_PASSPHRASE is not set (see OKX_API_KEY above).")
 
     if not config.chain_id:
         errors.append("X402_CHAIN_ID is not set.")
