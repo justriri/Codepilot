@@ -19,6 +19,7 @@ yet). Fine for a single local developer; not for multi-user production.
 import queue
 import textwrap
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -52,6 +53,7 @@ class Session:
     id: str
     request: str
     workspace_root: str
+    created_at: float = field(default_factory=time.time)
     status: str = "running"  # running | done | error
     events: list = field(default_factory=list)
     result: Optional[str] = None
@@ -195,6 +197,24 @@ class SessionManager:
     def get_session(self, session_id: str) -> Optional[Session]:
         with self._lock:
             return self._sessions.get(session_id)
+
+    def list_sessions(self) -> list[dict]:
+        with self._lock:
+            sessions = sorted(
+                self._sessions.values(),
+                key=lambda s: s.created_at,
+                reverse=True,
+            )
+            return [
+                {
+                    "id": s.id,
+                    "request": s.request,
+                    "status": s.status,
+                    "created_at": s.created_at,
+                    "result": s.result,
+                }
+                for s in sessions
+            ]
 
     def subscribe(self, session_id: str) -> Optional[queue.Queue]:
         """
