@@ -39,6 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agent.config import load_config
 from payments.config import load_x402_config
 from payments.x402_middleware import install_x402_middleware
 from server.session_manager import SessionManager
@@ -59,6 +60,33 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 class NewSessionRequest(BaseModel):
     request: str
+
+
+@app.get("/api/health")
+def health():
+    """Runtime configuration status for the console UI."""
+    config = load_config()
+    provider = (config.default_model_provider or "deepseek").lower()
+    key_by_provider = {
+        "anthropic": config.anthropic_api_key,
+        "deepseek": config.deepseek_api_key,
+        "openai": config.openai_api_key,
+    }
+    e2b_configured = bool((config.e2b_api_key or "").strip())
+    ai_configured = provider == "local" or bool((key_by_provider.get(provider) or "").strip())
+    return {
+        "ok": True,
+        "e2b_configured": e2b_configured,
+        "ai_provider": provider,
+        "ai_configured": ai_configured,
+        "demo_ready": e2b_configured,
+        "full_jobs_ready": e2b_configured and ai_configured,
+    }
+
+
+@app.get("/api/sessions")
+def list_sessions():
+    return {"sessions": manager.list_sessions()}
 
 
 @app.post("/api/demo/verification")
